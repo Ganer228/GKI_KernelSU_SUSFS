@@ -74,8 +74,10 @@ runs:
           CONFIG_SYSVIPC=y
           CONFIG_POSIX_MQUEUE=y
           CONFIG_IPC_NS=y
+          CONFIG_USER_NS=y
           CONFIG_DEVTMPFS=y
           CONFIG_BINFMT_MISC=y
           CONFIG_BINFMT_SCRIPT=y
           CONFIG_BINFMT_ELF=y
-
+          CONFIG_ZSMALLOC=y
+          CONFIG_ZRAM=y
