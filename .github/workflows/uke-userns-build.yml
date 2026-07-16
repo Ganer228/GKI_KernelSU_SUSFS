@@ -26,6 +26,6 @@ jobs:
     with:
       config_file: .github/config/android14-6.1.json
       feature_set: KSUN+NET+DS
-      ksu_branch: ""
+      ksu_branch: "dev"
       susfs_commit: ""
     secrets: inherit
