@@ -95,6 +95,63 @@ runs:
 
       exit 1
 
+  - name: 'Verify uke USER_NS kernel config'
+    if: ${{ inputs.bypass == 'false' && inputs.version == 'android14-6.1' }}
+    shell: bash
+    working-directory: ${{ github.workspace }}
+    run: |
+      set -euo pipefail
+
+      IMAGE="${{ github.workspace }}/AnyKernel3/Image"
+      CONFIG_OUT="${{ runner.temp }}/uke-kernel.config"
+      EXTRACT_IKCONFIG="${{ github.workspace }}/kernel/common/scripts/extract-ikconfig"
+
+      if [ ! -f "$IMAGE" ]; then
+        echo "ERROR: Normal Image was not produced"
+        exit 1
+      fi
+
+      if [ ! -f "$EXTRACT_IKCONFIG" ]; then
+        echo "ERROR: extract-ikconfig was not found"
+        exit 1
+      fi
+
+      bash "$EXTRACT_IKCONFIG" "$IMAGE" > "$CONFIG_OUT"
+      if [ ! -s "$CONFIG_OUT" ]; then
+        echo "ERROR: embedded kernel config could not be extracted"
+        exit 1
+      fi
+
+      required_configs=(
+        CONFIG_USER_NS
+        CONFIG_PID_NS
+        CONFIG_IPC_NS
+        CONFIG_SYSVIPC
+        CONFIG_POSIX_MQUEUE
+        CONFIG_SECCOMP
+        CONFIG_NTSYNC
+        CONFIG_ZSMALLOC
+        CONFIG_ZRAM
+        CONFIG_KSU
+      )
+
+      for cfg in "${required_configs[@]}"; do
+        if ! grep -qx "${cfg}=y" "$CONFIG_OUT"; then
+          echo "ERROR: required ${cfg}=y is missing"
+          grep -E "^${cfg}=|^# ${cfg} is not set" "$CONFIG_OUT" || true
+          exit 1
+        fi
+      done
+
+      if grep -qx 'CONFIG_KSU_SUSFS=y' "$CONFIG_OUT"; then
+        echo "ERROR: SUSFS is enabled; use the KSUN+DS feature set, not FULL"
+        exit 1
+      fi
+
+      cp "$CONFIG_OUT" "${{ github.workspace }}/AnyKernel3/uke-kernel.config"
+      echo "Verified: USER_NS, DroidSpaces namespaces, NTSYNC, built-in ZRAM and KernelSU"
+      echo "Verified: SUSFS is disabled"
+
   - name: 'Patch AnyKernel3 for Bypass Hack'
     shell: bash
     if: ${{ inputs.bypass == 'true' }}
@@ -103,4 +160,3 @@ runs:
       set -euo pipefail
       cp ${{ github.action_path }}/patches/bypass.patch "${{ github.workspace }}/AnyKernel3/bypass.patch"
       patch -p1 < bypass.patch
-
