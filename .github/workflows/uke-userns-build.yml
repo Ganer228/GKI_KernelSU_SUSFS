@@ -10,6 +10,7 @@ on:
       - .github/workflows/build.yml
       - .github/config/android14-6.1.json
       - .github/actions/droidspaces/**
+      - .github/actions/networking/**
       - .github/actions/ntsync/**
       - .github/actions/build-kernel/**
       - .github/actions/kernelsu/**
@@ -23,7 +24,7 @@ jobs:
     uses: ./.github/workflows/prepare.yml
     with:
       config_file: .github/config/android14-6.1.json
-      feature_set: KSUN+DS
+      feature_set: KSUN+NET+DS
       ksu_branch: ""
       susfs_commit: ""
     secrets: inherit
