@@ -6,6 +6,13 @@ on:
       - uke-userns
     paths:
       - .github/workflows/uke-userns-build.yml
+      - .github/workflows/prepare.yml
+      - .github/workflows/build.yml
+      - .github/config/android14-6.1.json
+      - .github/actions/droidspaces/**
+      - .github/actions/ntsync/**
+      - .github/actions/build-kernel/**
+      - .github/actions/kernelsu/**
 
 permissions:
   contents: write
