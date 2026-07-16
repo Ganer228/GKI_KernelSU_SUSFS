@@ -1,6 +1,7 @@
 name: Build uke USER_NS kernel
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - uke-userns
