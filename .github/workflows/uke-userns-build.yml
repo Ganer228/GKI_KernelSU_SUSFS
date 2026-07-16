@@ -1,0 +1,22 @@
+name: Build uke USER_NS kernel
+
+on:
+  push:
+    branches:
+      - uke-userns
+    paths:
+      - .github/workflows/uke-userns-build.yml
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/prepare.yml
+    with:
+      config_file: .github/config/android14-6.1.json
+      feature_set: KSUN+DS
+      ksu_branch: ""
+      susfs_commit: ""
+    secrets: inherit
