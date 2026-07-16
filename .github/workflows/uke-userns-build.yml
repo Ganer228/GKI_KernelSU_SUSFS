@@ -20,6 +20,7 @@ permissions:
   contents: write
   actions: write
 
+# Triggered after switching KernelSU-Next to the non-SUSFS dev branch.
 jobs:
   build:
     uses: ./.github/workflows/prepare.yml
