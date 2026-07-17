@@ -89,20 +89,20 @@ runs:
       run: |
         set -euo pipefail
 
-        MODULE_LIST="android/gki_aarch64_modules"
+        MODULE_LIST="modules.bzl"
         if [ ! -f "$MODULE_LIST" ]; then
           echo "ERROR: $MODULE_LIST was not found"
           exit 1
         fi
 
         sed -i \
-          -e '\#^drivers/block/zram/zram\.ko$#d' \
-          -e '\#^mm/zsmalloc\.ko$#d' \
+          -e '\#^[[:space:]]*"drivers/block/zram/zram\.ko",[[:space:]]*$#d' \
+          -e '\#^[[:space:]]*"mm/zsmalloc\.ko",[[:space:]]*$#d' \
           "$MODULE_LIST"
 
-        if grep -Eq '^(drivers/block/zram/zram|mm/zsmalloc)\.ko$' "$MODULE_LIST"; then
+        if grep -Eq '"(drivers/block/zram/zram|mm/zsmalloc)\.ko"' "$MODULE_LIST"; then
           echo "ERROR: built-in ZRAM entries remain in $MODULE_LIST"
           exit 1
         fi
 
-        echo "Removed zram.ko and zsmalloc.ko from GKI module outputs because both are built into Image"
+        echo "Removed zram.ko and zsmalloc.ko from modules.bzl because both are built into Image"
