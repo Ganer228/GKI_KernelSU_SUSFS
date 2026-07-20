@@ -20,13 +20,13 @@ permissions:
   contents: write
   actions: write
 
-# Triggered after removing built-in ZRAM/ZSMALLOC from the GKI module output list.
+# Triggered with the minimal uke profile after fixing built-in ZRAM/ZSMALLOC outputs.
 jobs:
   build:
     uses: ./.github/workflows/prepare.yml
     with:
       config_file: .github/config/android14-6.1.json
-      feature_set: KSUN+NET+DS
+      feature_set: KSUN+DS
       ksu_branch: "dev"
       susfs_commit: ""
     secrets: inherit
