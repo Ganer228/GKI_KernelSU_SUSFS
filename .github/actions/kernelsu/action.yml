@@ -1,15 +1,15 @@
-name: Setup KernelSU-Next
-description: Download and configure KernelSU-Next with version tracking
+name: Setup ReSukiSU
+description: Download and configure the ReSukiSU revision used by the working uke kernel
 inputs:
   ksu_branch:
-    description: 'KernelSU-Next branch, tag, or commit (empty = official dev branch)'
+    description: 'ReSukiSU branch, tag, or commit (empty = pinned working uke revision)'
     required: false
     default: ""
 
 runs:
   using: composite
   steps:
-    - name: Download KernelSU-Next
+    - name: Download pinned ReSukiSU
       shell: bash
       working-directory: ${{ github.workspace }}/kernel
       run: |
@@ -17,20 +17,27 @@ runs:
 
         KSU_INPUT="${{ inputs.ksu_branch }}"
         if [ -z "$KSU_INPUT" ]; then
-          KSU_INPUT="dev"
+          KSU_INPUT="2206a7dd71e600f34378c4c583244f46e7a35670"
         fi
 
-        echo "Using official KernelSU-Next ref: $KSU_INPUT"
-        curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" \
+        echo "Using ReSukiSU ref: $KSU_INPUT"
+        curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" \
           | bash -s "$KSU_INPUT"
 
-        git -C KernelSU-Next rev-parse --verify HEAD
-        echo "KernelSU-Next checked out at: $(git -C KernelSU-Next rev-parse --short HEAD)"
+        git -C KernelSU rev-parse --verify HEAD
+        ACTUAL_KSU_COMMIT="$(git -C KernelSU rev-parse HEAD)"
+        echo "ReSukiSU checked out at: $ACTUAL_KSU_COMMIT"
 
-    - name: Extract KSU Version Info
+        if [ "$KSU_INPUT" = "2206a7dd71e600f34378c4c583244f46e7a35670" ] && \
+           [ "$ACTUAL_KSU_COMMIT" != "$KSU_INPUT" ]; then
+          echo "ERROR: pinned ReSukiSU revision was not checked out"
+          exit 1
+        fi
+
+    - name: Extract ReSukiSU version info
       id: ksu-version
       shell: bash
-      working-directory: ${{ github.workspace }}/kernel/KernelSU-Next
+      working-directory: ${{ github.workspace }}/kernel/KernelSU
       run: |
         set -euo pipefail
 
@@ -43,28 +50,16 @@ runs:
         echo "KSU_VERSION=$KSU_VERSION" >> "$GITHUB_ENV"
         echo "KSU_COMMIT=$KSU_COMMIT" >> "$GITHUB_ENV"
 
-        echo "KernelSU-Next ref: $KSU_COMMIT"
-        echo "KernelSU-Next version: $KSU_VERSION"
-        echo "KernelSU-Next tag: ${KSU_GIT_TAG:-none}"
+        echo "ReSukiSU ref: $KSU_COMMIT"
+        echo "ReSukiSU version: $KSU_VERSION"
+        echo "ReSukiSU tag: ${KSU_GIT_TAG:-none}"
 
-    - name: Apply KernelSU-Next compatibility patch
-      shell: bash
-      working-directory: ${{ github.workspace }}/kernel/KernelSU-Next
-      run: |
-        set -euo pipefail
-
-        PATCH_FILE="${{ github.action_path }}/patches/static.patch"
-        if patch --dry-run -p1 < "$PATCH_FILE" >/dev/null 2>&1; then
-          patch -p1 < "$PATCH_FILE"
-        elif patch --reverse --dry-run -p1 < "$PATCH_FILE" >/dev/null 2>&1; then
-          echo "KernelSU-Next compatibility patch is already applied"
-        else
-          echo "ERROR: KernelSU-Next compatibility patch no longer applies"
-          exit 1
-        fi
-
-    - name: Enable Kernel Configs
+    - name: Enable working uke ReSukiSU configs
       uses: ./.github/actions/set-kernel-config
       with:
         config_list: |
           CONFIG_KSU=y
+          CONFIG_KSU_TRACEPOINT_HOOK=y
+          CONFIG_KSU_MULTI_MANAGER_SUPPORT=y
+          CONFIG_KSU_MANUAL_HOOK=n
+          CONFIG_KSU_SUSFS=n
