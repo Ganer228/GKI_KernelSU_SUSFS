@@ -20,13 +20,13 @@ permissions:
   contents: write
   actions: write
 
-# Triggered with the minimal uke profile after fixing built-in ZRAM/ZSMALLOC outputs.
+# Control build: working uke ReSukiSU revision + Thin LTO + USER_NS.
 jobs:
   build:
     uses: ./.github/workflows/prepare.yml
     with:
       config_file: .github/config/android14-6.1.json
       feature_set: KSUN+DS
-      ksu_branch: "dev"
+      ksu_branch: "2206a7dd71e600f34378c4c583244f46e7a35670"
       susfs_commit: ""
     secrets: inherit
