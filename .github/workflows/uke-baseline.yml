@@ -1,0 +1,22 @@
+name: Build uke working baseline
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/prepare.yml
+    with:
+      config_file: .github/kernel-config/a14-6.1-uke-baseline.json
+      ksu_commit: "2206a7dd71e600f34378c4c583244f46e7a35670"
+      anykernel_commit: ""
+      patches_commit: ""
+      susfs_commit: ""
+      feature_set: KSUN+DS
+      variant: Normal
+      use_repo: false
+    secrets: inherit
