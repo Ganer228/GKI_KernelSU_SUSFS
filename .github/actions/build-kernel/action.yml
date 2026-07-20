@@ -1,37 +1,198 @@
-name: 'Build Kernel'
-description: 'Builds kernel using legacy build.sh or Bazel (kleaf)'
+name: Build and verify uke baseline kernel
+
+description: Build the kernel with Thin LTO and reject any Image that differs from the known-working uke profile
 
 runs:
   using: composite
   steps:
-    - shell: bash
+    - name: Build baseline Image
+      shell: bash
       working-directory: ${{ github.workspace }}/kernel
       run: |
         set -euo pipefail
+
+        LOG_FILE="${{ github.workspace }}/kernel-build.log"
+        PREBUILD_CONFIG="${{ github.workspace }}/prebuild-gki_defconfig"
+        : > "$LOG_FILE"
+        cp common/arch/arm64/configs/gki_defconfig "$PREBUILD_CONFIG"
+
         export CCACHE_DIR="$GITHUB_WORKSPACE/kernel/.ccache"
         export PATH="/usr/lib/ccache:$PATH"
         export CC="ccache clang"
         export CXX="ccache clang++"
-        export CCACHE_MAXSIZE=1G
-        export CCACHE_COMPILERCHECK=content
-        export CCACHE_BASEDIR="$GITHUB_WORKSPACE"
-        export CCACHE_NOHASHDIR=true
-        export CCACHE_IGNOREOPTIONS=--sysroot*
-        export CCACHE_COMPRESSION=true
-        export CCACHE_COMPRESSION_LEVEL=3
-        export CCACHE_DIRECT=true
-        export CCACHE_FILE_CLONE=true
-        export CCACHE_INODE_CACHE=true
-        export CCACHE_UMASK=002
-        export CCACHE_SLOPPINESS="file_macro,time_macros,include_file_mtime,include_file_ctime,pch_defines,system_headers,locale"
-        if ccache --help 2>&1 | grep -q 'depend_mode'; then
-          export CCACHE_DEPEND=true
-        fi
-        echo "✅ ccache environment variables set"
-        ccache -p
+
         if [ -f "build/build.sh" ]; then
-          LTO=thin SKIP_MRPROPER=1 SKIP_EXT_MODULES=1 SKIP_CP_KERNEL_HDR=1 GKI_DEFCONFIG_FRAGMENT="$GITHUB_WORKSPACE/wild_gki.fragment" BUILD_CONFIG=common/build.config.gki.aarch64 CC="$CC" CXX="$CXX" build/build.sh
+          set +e
+          (
+            export LTO=thin
+            export SKIP_MRPROPER=1
+            export SKIP_EXT_MODULES=1
+            export SKIP_CP_KERNEL_HDR=1
+            export GKI_DEFCONFIG_FRAGMENT="$GITHUB_WORKSPACE/wild_gki.fragment"
+            export BUILD_CONFIG=common/build.config.gki.aarch64
+            build/build.sh -j"$(nproc)"
+          ) 2>&1 | tee "$LOG_FILE"
+          STATUS=${PIPESTATUS[0]}
+          set -e
         else
           cp "$GITHUB_WORKSPACE/wild_gki.fragment" common/arch/arm64/configs/wild_gki.fragment
-          tools/bazel build --config=fast --notrim --defconfig_fragment=//common:arch/arm64/configs/wild_gki.fragment --cache_dir=$GITHUB_WORKSPACE/kernel/.cache/bazel //common:kernel_aarch64
+          set +e
+          tools/bazel build \
+            --config=fast \
+            --lto=thin \
+            --notrim \
+            --config=stamp \
+            --defconfig_fragment=//common:arch/arm64/configs/wild_gki.fragment \
+            //common:kernel_aarch64/Image \
+            2>&1 | tee "$LOG_FILE"
+          STATUS=${PIPESTATUS[0]}
+          set -e
         fi
+
+        if [ "$STATUS" -ne 0 ]; then
+          echo "Kernel build failed with status $STATUS"
+          tail -n 250 "$LOG_FILE" || true
+          exit "$STATUS"
+        fi
+
+    - name: Gather normal Image
+      shell: bash
+      working-directory: ${{ github.workspace }}/kernel
+      run: |
+        set -euo pipefail
+        mkdir -p "${{ github.workspace }}/AnyKernel3"
+
+        if [ -f "bazel-bin/common/kernel_aarch64/Image" ]; then
+          SRC="bazel-bin/common/kernel_aarch64/Image"
+        elif [ -f "out/android14-6.1/dist/Image" ]; then
+          SRC="out/android14-6.1/dist/Image"
+        elif [ -f "/home/runner/out/dist/Image" ]; then
+          SRC="/home/runner/out/dist/Image"
+        else
+          echo "ERROR: built Image was not found"
+          exit 1
+        fi
+
+        cp "$SRC" "${{ github.workspace }}/AnyKernel3/Image"
+        sha256sum "${{ github.workspace }}/AnyKernel3/Image" | tee "${{ github.workspace }}/AnyKernel3/Image.sha256"
+
+    - name: Verify embedded working config and release
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: |
+        set -euo pipefail
+        exec > >(tee -a "${{ github.workspace }}/kernel-build.log") 2>&1
+
+        IMAGE="${{ github.workspace }}/AnyKernel3/Image"
+        CONFIG_OUT="${{ github.workspace }}/AnyKernel3/uke-baseline.config"
+        EXTRACT="${{ github.workspace }}/kernel/common/scripts/extract-ikconfig"
+
+        bash "$EXTRACT" "$IMAGE" > "$CONFIG_OUT"
+        test -s "$CONFIG_OUT"
+
+        required_y=(
+          CONFIG_PID_NS
+          CONFIG_IPC_NS
+          CONFIG_SYSVIPC
+          CONFIG_POSIX_MQUEUE
+          CONFIG_NTSYNC
+          CONFIG_ZRAM
+          CONFIG_ZSMALLOC
+          CONFIG_ZRAM_DEF_COMP_LZO
+          CONFIG_CRYPTO_LZ4HC
+          CONFIG_CRYPTO_LZ4K
+          CONFIG_CRYPTO_LZ4KD
+          CONFIG_CRYPTO_LZ4K_OPLUS
+          CONFIG_CRYPTO_842
+          CONFIG_842_COMPRESS
+          CONFIG_842_DECOMPRESS
+          CONFIG_LZ4K_COMPRESS
+          CONFIG_LZ4K_DECOMPRESS
+          CONFIG_LZ4KD_COMPRESS
+          CONFIG_LZ4KD_DECOMPRESS
+          CONFIG_IP_SET
+          CONFIG_IP_SET_HASH_IP
+          CONFIG_IP_SET_HASH_NET
+          CONFIG_NETFILTER_XT_SET
+          CONFIG_NETFILTER_XT_MATCH_ADDRTYPE
+          CONFIG_NETFILTER_XT_MATCH_RECENT
+          CONFIG_NETFILTER_XT_TARGET_LOG
+          CONFIG_NF_LOG_IPV6
+          CONFIG_NF_LOG_SYSLOG
+          CONFIG_KSU
+          CONFIG_KSU_TRACEPOINT_HOOK
+          CONFIG_KSU_MULTI_MANAGER_SUPPORT
+          CONFIG_LTO_CLANG_THIN
+        )
+
+        for cfg in "${required_y[@]}"; do
+          grep -qx "${cfg}=y" "$CONFIG_OUT" || {
+            echo "ERROR: ${cfg}=y is missing"
+            grep -E "^${cfg}=|^# ${cfg} is not set" "$CONFIG_OUT" || true
+            exit 1
+          }
+        done
+
+        grep -qx '# CONFIG_USER_NS is not set' "$CONFIG_OUT" || {
+          echo "ERROR: baseline must keep USER_NS disabled"
+          grep -E '^CONFIG_USER_NS=|^# CONFIG_USER_NS is not set' "$CONFIG_OUT" || true
+          exit 1
+        }
+
+        forbidden_y=(
+          CONFIG_USER_NS
+          CONFIG_KSU_SUSFS
+          CONFIG_LTO_NONE
+          CONFIG_ZRAM_DEF_COMP_LZORLE
+        )
+
+        for cfg in "${forbidden_y[@]}"; do
+          if grep -qx "${cfg}=y" "$CONFIG_OUT"; then
+            echo "ERROR: forbidden ${cfg}=y is enabled"
+            exit 1
+          fi
+        done
+
+        grep -qx 'CONFIG_ZRAM_DEF_COMP="lzo"' "$CONFIG_OUT" || {
+          echo "ERROR: ZRAM default compressor is not lzo"
+          grep '^CONFIG_ZRAM_DEF_COMP=' "$CONFIG_OUT" || true
+          exit 1
+        }
+
+        strings "$IMAGE" | grep -Fq '6.1.118uke-Droidspaces-ReSukiSU' || {
+          echo "ERROR: working uke release string was not found"
+          exit 1
+        }
+
+        strings "$IMAGE" | grep -Fq 'v4.1.0-2206a7dd@ReSukiSU' || {
+          echo "ERROR: expected ReSukiSU revision string was not found"
+          exit 1
+        }
+
+        cp "${{ github.workspace }}/wild_gki.fragment" "${{ github.workspace }}/AnyKernel3/uke-baseline.fragment"
+        {
+          echo 'release=6.1.118uke-Droidspaces-ReSukiSU'
+          echo 'resukisu=2206a7dd71e600f34378c4c583244f46e7a35670'
+          echo 'user_ns=n'
+          echo 'lto=thin'
+          echo 'zram_default=lzo'
+          echo 'sukisu_patch=547ae94bcaec53d030398f857950c64662043a5d'
+          echo 'droidspaces_patch=0b270d3d3b80eb4e0c3267a969c5ba4a7610c533'
+          sha256sum "$IMAGE"
+        } > "${{ github.workspace }}/AnyKernel3/uke-baseline-build.txt"
+
+        echo "Verified working uke baseline: USER_NS=n, Thin LTO, ReSukiSU 2206a7dd, NTSYNC, LZ4K/842 and lzo ZRAM"
+
+    - name: Upload baseline diagnostics
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: uke-6.1.118-baseline-diagnostics
+        path: |
+          ${{ github.workspace }}/kernel-build.log
+          ${{ github.workspace }}/prebuild-gki_defconfig
+          ${{ github.workspace }}/wild_gki.fragment
+          ${{ github.workspace }}/AnyKernel3/uke-baseline.config
+          ${{ github.workspace }}/AnyKernel3/uke-baseline-build.txt
+        if-no-files-found: ignore
+        compression-level: 9
