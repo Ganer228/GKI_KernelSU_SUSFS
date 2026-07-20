@@ -15,12 +15,14 @@ on:
       - .github/actions/ntsync/**
       - .github/actions/build-kernel/**
       - .github/actions/kernelsu/**
+      - .github/actions/apply-kernel-branding/**
 
 permissions:
   contents: write
   actions: write
 
-# Control build: working uke ReSukiSU revision + Thin LTO + USER_NS.
+# Control build: working uke ReSukiSU revision + Thin LTO + USER_NS
+# with the exact working kernel release suffix.
 jobs:
   build:
     uses: ./.github/workflows/prepare.yml
