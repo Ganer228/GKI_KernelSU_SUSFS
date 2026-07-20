@@ -37,36 +37,59 @@ runs:
   - name: Setup Kernel Configs
     if: false
     uses: ./.github/actions/set-kernel-config
-  
+
   - name: 'Build Kernel'
     shell: bash
     working-directory: ${{ github.workspace }}/kernel
     run: |
+      set -uo pipefail
+
+      LOG_FILE="${{ github.workspace }}/kernel-build.log"
+      PREBUILD_CONFIG="${{ github.workspace }}/prebuild-gki_defconfig"
+      : > "$LOG_FILE"
+      cp common/arch/arm64/configs/gki_defconfig "$PREBUILD_CONFIG"
+
       sed -i 's/check_defconfig//' ./common/build.config.gki
+
+      set +e
       if [ -f "build/build.sh" ]; then
-        BUILD_GKI_ARTIFACTS="" \
-        BUILD_GKI_CERTIFICATION_TOOLS=0 \
-        BUILD_SYSTEM_DLKM=0 \
-        SKIP_VENDOR_BOOT=1 \
-        SKIP_EXT_MODULES=1 \
-        SKIP_CP_KERNEL_HDR=1 \
-        OUT_DIR="/home/runner/out" \
-        LTO=thin \
-        BUILD_CONFIG=common/build.config.gki.aarch64 \
-        build/build.sh -j"$(nproc)" \
-        CC="/usr/bin/ccache clang" \
-        CXX="/usr/bin/ccache clang+" \
-        HOSTCC="/usr/bin/ccache clang" \
-        HOSTCXX="/usr/bin/ccache clang+"
+        (
+          export BUILD_GKI_ARTIFACTS=""
+          export BUILD_GKI_CERTIFICATION_TOOLS=0
+          export BUILD_SYSTEM_DLKM=0
+          export SKIP_VENDOR_BOOT=1
+          export SKIP_EXT_MODULES=1
+          export SKIP_CP_KERNEL_HDR=1
+          export OUT_DIR="/home/runner/out"
+          export LTO=thin
+          export BUILD_CONFIG=common/build.config.gki.aarch64
+          build/build.sh -j"$(nproc)" \
+            CC="/usr/bin/ccache clang" \
+            CXX="/usr/bin/ccache clang+" \
+            HOSTCC="/usr/bin/ccache clang" \
+            HOSTCXX="/usr/bin/ccache clang+"
+        ) 2>&1 | tee "$LOG_FILE"
+        BUILD_STATUS=${PIPESTATUS[0]}
       else
         if [ "${{ inputs.bypass }}" = "false" ]; then
           sed -i '/name = "kernel_aarch64",/a\    check_defconfig = "disabled",' common/BUILD.bazel
         fi
         tools/bazel build \
           --config=fast \
+          --lto=thin \
           --config=stamp \
           --disk_cache=/home/runner/.cache/bazel \
-          //common:kernel_aarch64/Image
+          //common:kernel_aarch64/Image \
+          2>&1 | tee "$LOG_FILE"
+        BUILD_STATUS=${PIPESTATUS[0]}
+      fi
+      set -e
+
+      if [ "$BUILD_STATUS" -ne 0 ]; then
+        echo "Build command failed with status $BUILD_STATUS"
+        echo "Last 250 lines of kernel-build.log:"
+        tail -n 250 "$LOG_FILE" || true
+        exit "$BUILD_STATUS"
       fi
 
   - name: 'Gather Build Artifacts'
@@ -74,6 +97,8 @@ runs:
     working-directory: ${{ github.workspace }}/kernel
     run: |
       set -euo pipefail
+      exec > >(tee -a "${{ github.workspace }}/kernel-build.log") 2>&1
+
       if [ -f "bazel-bin/common/kernel_aarch64/Image" ]; then
         echo "Found Image at bazel-bin/common/kernel_aarch64/Image"
         if [[ ${{ inputs.bypass }} == "true" ]]; then
@@ -82,7 +107,8 @@ runs:
           cp "bazel-bin/common/kernel_aarch64/Image" "${{ github.workspace }}/AnyKernel3/Image"
         fi
         exit 0
-        fi
+      fi
+
       if [ -f "/home/runner/out/dist/Image" ]; then
         echo "Found Image at /home/runner/out/dist/Image"
         if [[ ${{ inputs.bypass }} == "true" ]]; then
@@ -93,7 +119,91 @@ runs:
         exit 0
       fi
 
+      echo "ERROR: built Image was not found in expected locations"
       exit 1
+
+  - name: 'Verify uke USER_NS kernel config'
+    if: ${{ inputs.bypass == 'false' && inputs.version == 'android14-6.1' }}
+    shell: bash
+    working-directory: ${{ github.workspace }}
+    run: |
+      set -euo pipefail
+      exec > >(tee -a "${{ github.workspace }}/kernel-build.log") 2>&1
+
+      IMAGE="${{ github.workspace }}/AnyKernel3/Image"
+      CONFIG_OUT="${{ runner.temp }}/uke-kernel.config"
+      EXTRACT_IKCONFIG="${{ github.workspace }}/kernel/common/scripts/extract-ikconfig"
+
+      if [ ! -f "$IMAGE" ]; then
+        echo "ERROR: Normal Image was not produced"
+        exit 1
+      fi
+
+      if [ ! -f "$EXTRACT_IKCONFIG" ]; then
+        echo "ERROR: extract-ikconfig was not found"
+        exit 1
+      fi
+
+      bash "$EXTRACT_IKCONFIG" "$IMAGE" > "$CONFIG_OUT"
+      if [ ! -s "$CONFIG_OUT" ]; then
+        echo "ERROR: embedded kernel config could not be extracted"
+        exit 1
+      fi
+
+      required_configs=(
+        CONFIG_USER_NS
+        CONFIG_PID_NS
+        CONFIG_IPC_NS
+        CONFIG_SYSVIPC
+        CONFIG_POSIX_MQUEUE
+        CONFIG_SECCOMP
+        CONFIG_NTSYNC
+        CONFIG_ZSMALLOC
+        CONFIG_ZRAM
+        CONFIG_KSU
+        CONFIG_KSU_TRACEPOINT_HOOK
+        CONFIG_KSU_MULTI_MANAGER_SUPPORT
+        CONFIG_LTO_CLANG_THIN
+      )
+
+      for cfg in "${required_configs[@]}"; do
+        if ! grep -qx "${cfg}=y" "$CONFIG_OUT"; then
+          echo "ERROR: required ${cfg}=y is missing"
+          grep -E "^${cfg}=|^# ${cfg} is not set" "$CONFIG_OUT" || true
+          cp "$CONFIG_OUT" "${{ github.workspace }}/uke-kernel.config.failed"
+          exit 1
+        fi
+      done
+
+      forbidden_configs=(
+        CONFIG_KSU_SUSFS
+        CONFIG_LTO_NONE
+      )
+
+      for cfg in "${forbidden_configs[@]}"; do
+        if grep -qx "${cfg}=y" "$CONFIG_OUT"; then
+          echo "ERROR: forbidden ${cfg}=y is enabled"
+          cp "$CONFIG_OUT" "${{ github.workspace }}/uke-kernel.config.failed"
+          exit 1
+        fi
+      done
+
+      cp "$CONFIG_OUT" "${{ github.workspace }}/AnyKernel3/uke-kernel.config"
+      echo "Verified: USER_NS, DroidSpaces namespaces, NTSYNC and built-in ZRAM"
+      echo "Verified: pinned ReSukiSU tracepoint profile with Thin LTO"
+      echo "Verified: SUSFS and LTO_NONE are disabled"
+
+  - name: 'Upload Kernel Build Diagnostics'
+    if: ${{ always() }}
+    uses: actions/upload-artifact@v7
+    with:
+      name: ${{ inputs.version }}-${{ inputs.bypass }}-KernelBuildDiagnostics
+      path: |
+        ${{ github.workspace }}/kernel-build.log
+        ${{ github.workspace }}/prebuild-gki_defconfig
+        ${{ github.workspace }}/uke-kernel.config.failed
+      if-no-files-found: ignore
+      compression-level: 9
 
   - name: 'Patch AnyKernel3 for Bypass Hack'
     shell: bash
@@ -103,4 +213,3 @@ runs:
       set -euo pipefail
       cp ${{ github.action_path }}/patches/bypass.patch "${{ github.workspace }}/AnyKernel3/bypass.patch"
       patch -p1 < bypass.patch
-

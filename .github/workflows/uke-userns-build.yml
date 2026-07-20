@@ -1,0 +1,34 @@
+name: Build uke USER_NS kernel
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - uke-userns
+    paths:
+      - .github/workflows/uke-userns-build.yml
+      - .github/workflows/prepare.yml
+      - .github/workflows/build.yml
+      - .github/config/android14-6.1.json
+      - .github/actions/droidspaces/**
+      - .github/actions/networking/**
+      - .github/actions/ntsync/**
+      - .github/actions/build-kernel/**
+      - .github/actions/kernelsu/**
+      - .github/actions/apply-kernel-branding/**
+
+permissions:
+  contents: write
+  actions: write
+
+# Control build: working uke ReSukiSU revision + Thin LTO + USER_NS
+# with the exact working kernel release suffix.
+jobs:
+  build:
+    uses: ./.github/workflows/prepare.yml
+    with:
+      config_file: .github/config/android14-6.1.json
+      feature_set: KSUN+DS
+      ksu_branch: "2206a7dd71e600f34378c4c583244f46e7a35670"
+      susfs_commit: ""
+    secrets: inherit
