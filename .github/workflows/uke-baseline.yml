@@ -2,6 +2,19 @@ name: Build uke working baseline
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - uke-working-baseline
+    paths:
+      - .github/workflows/uke-baseline.yml
+      - .github/workflows/prepare.yml
+      - .github/workflows/build.yml
+      - .github/kernel-config/a14-6.1-uke-baseline.json
+      - .github/actions/kernelsu/**
+      - .github/actions/droidspaces/**
+      - .github/actions/build-kernel/**
+      - .github/actions/apply-kernel-branding/**
+      - .github/actions/ntsync/**
 
 permissions:
   contents: write
@@ -13,8 +26,8 @@ jobs:
     with:
       config_file: .github/kernel-config/a14-6.1-uke-baseline.json
       ksu_commit: "2206a7dd71e600f34378c4c583244f46e7a35670"
-      anykernel_commit: ""
-      patches_commit: ""
+      anykernel_commit: "e1e9dce98430c5c6f231f7094a8c7f4ecaf50948"
+      patches_commit: "4540f58d80cf187ea56300f6f4a6b3def4ca4412"
       susfs_commit: ""
       feature_set: KSUN+DS
       variant: Normal
