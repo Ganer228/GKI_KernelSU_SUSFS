@@ -1,82 +1,107 @@
-name: Setup Droidspaces-OSS
-description: Clone and apply Droidspaces-OSS patches with version-specific fixes
+name: Setup uke DroidSpaces baseline
+
+description: Reproduce the known-working uke DroidSpaces configuration without USER namespaces
+
 inputs:
-  android_version:
-    description: 'Android version (e.g., android15)'
-    required: true
   kernel_version:
-    description: 'Kernel version (e.g., 6.6)'
-    required: true
-  os_patch_level:
-    description: 'OS patch level (e.g., 2024-07)'
-    required: true
-  sublevel:
-    description: 'Kernel sublevel'
+    description: 'Kernel version (expected 6.1)'
     required: true
 
 runs:
   using: composite
   steps:
-    - name: Apply the SYSVIPC kABI fix
+    - name: Apply pinned SYSVIPC kABI fix
       shell: bash
       working-directory: ${{ github.workspace }}/kernel/common
       run: |
-        if [ "${{ inputs.kernel_version }}" == "6.12" ]; then
-          curl -L https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/kernel-6.12/001.GKI-6.12-or-above-fix_sysvipc_kabi.patch | patch -p1
-        else
-          curl -L https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch | patch -p1
-        fi
+        set -euo pipefail
+        test "${{ inputs.kernel_version }}" = "6.1"
+        curl -fL \
+          "https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/0b270d3d3b80eb4e0c3267a969c5ba4a7610c533/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch" \
+          -o /tmp/uke-sysvipc-kabi.patch
+        patch -p1 --forward < /tmp/uke-sysvipc-kabi.patch
 
-    - name: Enable KernelSU SUSFS Config
+    - name: Add pinned LZ4K LZ4KD and LZ4K OPlus sources
+      shell: bash
+      working-directory: ${{ github.workspace }}/kernel/common
+      run: |
+        set -euo pipefail
+        PATCH_REF="547ae94bcaec53d030398f857950c64662043a5d"
+        PATCH_DIR="${{ github.workspace }}/SukiSU_patch"
+
+        rm -rf "$PATCH_DIR"
+        git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git "$PATCH_DIR"
+        git -C "$PATCH_DIR" checkout "$PATCH_REF"
+        test "$(git -C "$PATCH_DIR" rev-parse HEAD)" = "$PATCH_REF"
+
+        cp -a "$PATCH_DIR/other/zram/lz4k/include/linux/." include/linux/
+        cp -a "$PATCH_DIR/other/zram/lz4k/lib/." lib/
+        cp -a "$PATCH_DIR/other/zram/lz4k/crypto/." crypto/
+        rm -rf lib/lz4k_oplus
+        cp -a "$PATCH_DIR/other/zram/lz4k_oplus" lib/lz4k_oplus
+
+        patch -p1 --forward < "$PATCH_DIR/other/zram/zram_patch/6.1/lz4kd.patch"
+        patch -p1 --forward < "$PATCH_DIR/other/zram/zram_patch/6.1/lz4k_oplus.patch"
+
+    - name: Restore known-working uke config profile
       shell: bash
       working-directory: ${{ github.workspace }}/kernel
       run: |
         cat >> "${{ github.workspace }}/wild_gki.fragment" << 'EOF'
-        # Kernel configurations for full DroidSpaces support for GKI
-        # Copyright (C) 2026 ravindu644 <droidcasts@protonmail.com>
-
-        # IPC
         CONFIG_SYSVIPC=y
         CONFIG_POSIX_MQUEUE=y
-
-        # Namespaces
         CONFIG_IPC_NS=y
         CONFIG_PID_NS=y
-
-        # HW Access Support
+        # CONFIG_USER_NS is not set
         CONFIG_DEVTMPFS=y
+        CONFIG_BINFMT_MISC=y
+        CONFIG_BINFMT_SCRIPT=y
+        CONFIG_BINFMT_ELF=y
 
-        # --- Below configs are optional but recommended ---
+        CONFIG_CRYPTO_LZ4HC=y
+        CONFIG_CRYPTO_LZ4K=y
+        CONFIG_CRYPTO_LZ4KD=y
+        CONFIG_CRYPTO_LZ4K_OPLUS=y
+        CONFIG_CRYPTO_842=y
+        CONFIG_842_COMPRESS=y
+        CONFIG_842_DECOMPRESS=y
+        CONFIG_LZ4K_COMPRESS=y
+        CONFIG_LZ4K_DECOMPRESS=y
+        CONFIG_LZ4KD_COMPRESS=y
+        CONFIG_LZ4KD_DECOMPRESS=y
 
-        # Networking (Docker/NAT support)
+        CONFIG_ZSMALLOC=y
+        CONFIG_ZRAM=y
+        CONFIG_ZRAM_DEF_COMP_LZO=y
+        # CONFIG_ZRAM_DEF_COMP_LZORLE is not set
+        # CONFIG_ZRAM_DEF_COMP_842 is not set
+        # CONFIG_ZRAM_DEF_COMP_DEFLATE is not set
+        # CONFIG_ZRAM_DEF_COMP_LZ4HC is not set
+        # CONFIG_ZRAM_DEF_COMP_LZ4K is not set
+        # CONFIG_ZRAM_DEF_COMP_LZ4KD is not set
+        # CONFIG_ZRAM_DEF_COMP_LZ4K_OPLUS is not set
+
         CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
-
-        # UFW support
-        CONFIG_NETFILTER_XT_TARGET_REJECT=y
-        CONFIG_NETFILTER_XT_TARGET_LOG=y
         CONFIG_NETFILTER_XT_MATCH_RECENT=y
-
-        # Fail2ban support
+        CONFIG_NETFILTER_XT_TARGET_LOG=y
         CONFIG_IP_SET=y
+        CONFIG_IP_SET_MAX=256
         CONFIG_IP_SET_HASH_IP=y
         CONFIG_IP_SET_HASH_NET=y
         CONFIG_NETFILTER_XT_SET=y
+        CONFIG_NF_LOG_IPV6=y
+        CONFIG_NF_LOG_SYSLOG=y
         EOF
 
-    - name: Apply Android 15 6.6 Fixes
-      if: false
+    - name: Remove built-in zram entries from GKI module outputs
       shell: bash
       working-directory: ${{ github.workspace }}/kernel/common
       run: |
-        SUBLEVEL=${{ env.SUBLEVEL }}
-        SUSFS_VERSION=${{ env.SUSFS_VERSION }}
-
-        if [[ "$SUBLEVEL" -le 92 ]]; then
-          cp ${{ github.workspace }}/kernel_patches/wild/susfs_fix_patches/${SUSFS_VERSION}/a15-6.6/base.c.patch ./
-          patch -p1 < base.c.patch
-        fi
-
-        if [[ "$SUBLEVEL" -le 58 ]]; then
-          cp ${{ github.workspace }}/kernel_patches/wild/susfs_fix_patches/${SUSFS_VERSION}/a15-6.6/task_mmu.c.patch ./
-          patch -p1 < task_mmu.c.patch
-        fi
+        set -euo pipefail
+        MODULE_LIST="modules.bzl"
+        test -f "$MODULE_LIST"
+        sed -i \
+          -e '\#^[[:space:]]*"drivers/block/zram/zram\.ko",[[:space:]]*$#d' \
+          -e '\#^[[:space:]]*"mm/zsmalloc\.ko",[[:space:]]*$#d' \
+          "$MODULE_LIST"
+        ! grep -Eq '"(drivers/block/zram/zram|mm/zsmalloc)\.ko"' "$MODULE_LIST"
