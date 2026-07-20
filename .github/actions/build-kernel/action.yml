@@ -183,7 +183,7 @@ runs:
 
         echo "Verified working uke baseline: USER_NS=n, Thin LTO, ReSukiSU 2206a7dd, NTSYNC, LZ4K/842 and lzo ZRAM"
 
-    - name: Upload baseline diagnostics
+    - name: Upload baseline diagnostics and Image
       if: ${{ always() }}
       uses: actions/upload-artifact@v7
       with:
@@ -192,6 +192,8 @@ runs:
           ${{ github.workspace }}/kernel-build.log
           ${{ github.workspace }}/prebuild-gki_defconfig
           ${{ github.workspace }}/wild_gki.fragment
+          ${{ github.workspace }}/AnyKernel3/Image
+          ${{ github.workspace }}/AnyKernel3/Image.sha256
           ${{ github.workspace }}/AnyKernel3/uke-baseline.config
           ${{ github.workspace }}/AnyKernel3/uke-baseline-build.txt
         if-no-files-found: ignore
