@@ -76,6 +76,7 @@ runs:
         fi
         tools/bazel build \
           --config=fast \
+          --lto=thin \
           --config=stamp \
           --disk_cache=/home/runner/.cache/bazel \
           //common:kernel_aarch64/Image \
@@ -160,6 +161,9 @@ runs:
         CONFIG_ZSMALLOC
         CONFIG_ZRAM
         CONFIG_KSU
+        CONFIG_KSU_TRACEPOINT_HOOK
+        CONFIG_KSU_MULTI_MANAGER_SUPPORT
+        CONFIG_LTO_CLANG_THIN
       )
 
       for cfg in "${required_configs[@]}"; do
@@ -171,15 +175,23 @@ runs:
         fi
       done
 
-      if grep -qx 'CONFIG_KSU_SUSFS=y' "$CONFIG_OUT"; then
-        echo "ERROR: SUSFS is enabled; use the KSUN+DS feature set, not FULL"
-        cp "$CONFIG_OUT" "${{ github.workspace }}/uke-kernel.config.failed"
-        exit 1
-      fi
+      forbidden_configs=(
+        CONFIG_KSU_SUSFS
+        CONFIG_LTO_NONE
+      )
+
+      for cfg in "${forbidden_configs[@]}"; do
+        if grep -qx "${cfg}=y" "$CONFIG_OUT"; then
+          echo "ERROR: forbidden ${cfg}=y is enabled"
+          cp "$CONFIG_OUT" "${{ github.workspace }}/uke-kernel.config.failed"
+          exit 1
+        fi
+      done
 
       cp "$CONFIG_OUT" "${{ github.workspace }}/AnyKernel3/uke-kernel.config"
-      echo "Verified: USER_NS, DroidSpaces namespaces, NTSYNC, built-in ZRAM and KernelSU"
-      echo "Verified: SUSFS is disabled"
+      echo "Verified: USER_NS, DroidSpaces namespaces, NTSYNC and built-in ZRAM"
+      echo "Verified: pinned ReSukiSU tracepoint profile with Thin LTO"
+      echo "Verified: SUSFS and LTO_NONE are disabled"
 
   - name: 'Upload Kernel Build Diagnostics'
     if: ${{ always() }}
