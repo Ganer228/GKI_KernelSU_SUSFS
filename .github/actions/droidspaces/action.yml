@@ -43,6 +43,18 @@ runs:
         patch -p1 --forward < "$PATCH_DIR/other/zram/zram_patch/6.1/lz4kd.patch"
         patch -p1 --forward < "$PATCH_DIR/other/zram/zram_patch/6.1/lz4k_oplus.patch"
 
+    - name: Apply pinned NTSync implementation
+      shell: bash
+      working-directory: ${{ github.workspace }}/kernel/common
+      run: |
+        set -euo pipefail
+        COMPAT="${{ github.workspace }}/kernel_patches/common/ntsync/ntsync_compat_android14-6.1.patch"
+        BASE="${{ github.workspace }}/kernel_patches/common/ntsync/ntsync_base.patch"
+        test -f "$COMPAT"
+        test -f "$BASE"
+        patch -p1 --forward < "$COMPAT"
+        patch -p1 --forward < "$BASE"
+
     - name: Restore known-working uke config profile
       shell: bash
       working-directory: ${{ github.workspace }}/kernel
@@ -57,6 +69,7 @@ runs:
         CONFIG_BINFMT_MISC=y
         CONFIG_BINFMT_SCRIPT=y
         CONFIG_BINFMT_ELF=y
+        CONFIG_NTSYNC=y
 
         CONFIG_CRYPTO_LZ4HC=y
         CONFIG_CRYPTO_LZ4K=y
