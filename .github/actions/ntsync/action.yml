@@ -1,0 +1,36 @@
+name: Apply pinned NTSync patches
+
+description: Apply the NTSync implementation used by the working uke profile
+
+inputs:
+  version:
+    description: 'Combined Android/kernel version'
+    required: true
+  kernel_version:
+    description: 'Kernel version'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Apply NTSync compatibility and base patches
+      shell: bash
+      working-directory: ${{ github.workspace }}/kernel/common
+      run: |
+        set -euo pipefail
+        test "${{ inputs.version }}" = "android14-6.1"
+        test "${{ inputs.kernel_version }}" = "6.1"
+
+        cp "${{ github.workspace }}/kernel_patches/common/ntsync/ntsync_compat_android14-6.1.patch" ./
+        patch -p1 --forward < ntsync_compat_android14-6.1.patch
+
+        cp "${{ github.workspace }}/kernel_patches/common/ntsync/ntsync_base.patch" ./
+        patch -p1 --forward < ntsync_base.patch
+
+    - name: Enable NTSync
+      shell: bash
+      working-directory: ${{ github.workspace }}/kernel
+      run: |
+        cat >> "${{ github.workspace }}/wild_gki.fragment" << 'EOF'
+        CONFIG_NTSYNC=y
+        EOF
