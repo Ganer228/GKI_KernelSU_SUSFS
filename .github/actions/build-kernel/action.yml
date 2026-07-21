@@ -1,258 +1,106 @@
-name: Build and verify uke baseline kernel
+name: Build and verify uke USER_NS twin
 
-description: Build the kernel with Thin LTO and reject any Image that differs materially from the known-working uke profile
+description: Build the booting baseline with only CONFIG_USER_NS changed to y
 
 runs:
   using: composite
   steps:
-    - name: Build baseline Image
+    - name: Build USER_NS twin Image
       shell: bash
       working-directory: ${{ github.workspace }}/kernel
       run: |
         set -euo pipefail
-
-        LOG_FILE="${{ github.workspace }}/kernel-build.log"
-        PREBUILD_CONFIG="${{ github.workspace }}/prebuild-gki_defconfig"
-        : > "$LOG_FILE"
-        cp common/arch/arm64/configs/gki_defconfig "$PREBUILD_CONFIG"
-
+        LOG="${{ github.workspace }}/kernel-build.log"
+        : > "$LOG"
+        cp common/arch/arm64/configs/gki_defconfig "${{ github.workspace }}/prebuild-gki_defconfig"
         export CCACHE_DIR="$GITHUB_WORKSPACE/kernel/.ccache"
         export PATH="/usr/lib/ccache:$PATH"
-        export CC="ccache clang"
-        export CXX="ccache clang++"
+        export KBUILD_BUILD_USER=build-user
+        export KBUILD_BUILD_HOST=build-host
+        cp "$GITHUB_WORKSPACE/wild_gki.fragment" common/arch/arm64/configs/wild_gki.fragment
+        set +e
+        tools/bazel build \
+          --config=fast \
+          --lto=thin \
+          --config=stamp \
+          --action_env=KBUILD_BUILD_USER=build-user \
+          --action_env=KBUILD_BUILD_HOST=build-host \
+          --defconfig_fragment=//common:arch/arm64/configs/wild_gki.fragment \
+          //common:kernel_aarch64/Image 2>&1 | tee "$LOG"
+        STATUS=${PIPESTATUS[0]}
+        set -e
+        test "$STATUS" = 0
 
-        # Match the useful build identity fields from the known-working Image.
-        # Kleaf deliberately normalizes the timestamp for reproducible builds;
-        # the date is not part of KMI, module vermagic compatibility or boot ABI.
-        export KBUILD_BUILD_USER="build-user"
-        export KBUILD_BUILD_HOST="build-host"
-
-        if [ -f "build/build.sh" ]; then
-          set +e
-          (
-            export LTO=thin
-            export SKIP_MRPROPER=1
-            export SKIP_EXT_MODULES=1
-            export SKIP_CP_KERNEL_HDR=1
-            export GKI_DEFCONFIG_FRAGMENT="$GITHUB_WORKSPACE/wild_gki.fragment"
-            export BUILD_CONFIG=common/build.config.gki.aarch64
-            build/build.sh -j"$(nproc)"
-          ) 2>&1 | tee "$LOG_FILE"
-          STATUS=${PIPESTATUS[0]}
-          set -e
-        else
-          cp "$GITHUB_WORKSPACE/wild_gki.fragment" common/arch/arm64/configs/wild_gki.fragment
-          set +e
-          tools/bazel build \
-            --config=fast \
-            --lto=thin \
-            --config=stamp \
-            --action_env=KBUILD_BUILD_USER=build-user \
-            --action_env=KBUILD_BUILD_HOST=build-host \
-            --defconfig_fragment=//common:arch/arm64/configs/wild_gki.fragment \
-            //common:kernel_aarch64/Image \
-            2>&1 | tee "$LOG_FILE"
-          STATUS=${PIPESTATUS[0]}
-          set -e
-        fi
-
-        if [ "$STATUS" -ne 0 ]; then
-          echo "Kernel build failed with status $STATUS"
-          tail -n 250 "$LOG_FILE" || true
-          exit "$STATUS"
-        fi
-
-    - name: Gather normal Image
-      shell: bash
-      working-directory: ${{ github.workspace }}/kernel
-      run: |
-        set -euo pipefail
-        mkdir -p "${{ github.workspace }}/AnyKernel3"
-
-        if [ -f "bazel-bin/common/kernel_aarch64/Image" ]; then
-          SRC="bazel-bin/common/kernel_aarch64/Image"
-        elif [ -f "out/android14-6.1/dist/Image" ]; then
-          SRC="out/android14-6.1/dist/Image"
-        elif [ -f "/home/runner/out/dist/Image" ]; then
-          SRC="/home/runner/out/dist/Image"
-        else
-          echo "ERROR: built Image was not found"
-          exit 1
-        fi
-
-        cp "$SRC" "${{ github.workspace }}/AnyKernel3/Image"
-        sha256sum "${{ github.workspace }}/AnyKernel3/Image" | tee "${{ github.workspace }}/AnyKernel3/Image.sha256"
-
-    - name: Verify exact working config and binary profile
+    - name: Verify sole USER_NS delta
       shell: bash
       working-directory: ${{ github.workspace }}
       run: |
         set -euo pipefail
-        exec > >(tee -a "${{ github.workspace }}/kernel-build.log") 2>&1
+        OUT="${{ github.workspace }}/AnyKernel3"
+        mkdir -p "$OUT"
+        cp "${{ github.workspace }}/kernel/bazel-bin/common/kernel_aarch64/Image" "$OUT/Image"
+        sha256sum "$OUT/Image" | tee "$OUT/Image.sha256"
 
-        IMAGE="${{ github.workspace }}/AnyKernel3/Image"
-        CONFIG_OUT="${{ github.workspace }}/AnyKernel3/uke-baseline.config"
         EXTRACT="${{ github.workspace }}/kernel/common/scripts/extract-ikconfig"
-        EXPECTED_CONFIG_SHA256="91e3593a6b8074418b4cc527b241f354f9e19245eee6328186af7f917e224b84"
+        ACTUAL="$OUT/uke-userns-twin.config"
+        NORMALIZED="$OUT/uke-userns-normalized.config"
+        bash "$EXTRACT" "$OUT/Image" > "$ACTUAL"
 
-        bash "$EXTRACT" "$IMAGE" > "$CONFIG_OUT"
-        test -s "$CONFIG_OUT"
+        python3 - "$ACTUAL" "$NORMALIZED" << 'PY'
+        from pathlib import Path
+        import sys
+        src = Path(sys.argv[1]).read_text()
+        on = "CONFIG_USER_NS=y\n"
+        off = "# CONFIG_USER_NS is not set\n"
+        if src.count(on) != 1 or off in src:
+            raise SystemExit("USER_NS assignment is not exactly CONFIG_USER_NS=y")
+        Path(sys.argv[2]).write_text(src.replace(on, off, 1))
+        PY
 
-        CONFIG_SHA256="$(sha256sum "$CONFIG_OUT" | awk '{print $1}')"
-        if [ "$CONFIG_SHA256" != "$EXPECTED_CONFIG_SHA256" ]; then
-          echo "ERROR: embedded config is not byte-for-byte identical to the known-working uke config"
-          echo "actual=$CONFIG_SHA256"
-          echo "expected=$EXPECTED_CONFIG_SHA256"
-          exit 1
-        fi
-        echo "Exact working config verified: $CONFIG_SHA256"
-
-        required_y=(
-          CONFIG_PID_NS
-          CONFIG_IPC_NS
-          CONFIG_SYSVIPC
-          CONFIG_POSIX_MQUEUE
-          CONFIG_NTSYNC
-          CONFIG_ZRAM
-          CONFIG_ZSMALLOC
-          CONFIG_ZRAM_DEF_COMP_LZO
-          CONFIG_CRYPTO_LZ4HC
-          CONFIG_CRYPTO_LZ4K
-          CONFIG_CRYPTO_LZ4KD
-          CONFIG_CRYPTO_LZ4K_OPLUS
-          CONFIG_CRYPTO_842
-          CONFIG_842_COMPRESS
-          CONFIG_842_DECOMPRESS
-          CONFIG_LZ4K_COMPRESS
-          CONFIG_LZ4K_DECOMPRESS
-          CONFIG_LZ4KD_COMPRESS
-          CONFIG_LZ4KD_DECOMPRESS
-          CONFIG_IP_SET
-          CONFIG_IP_SET_HASH_IP
-          CONFIG_IP_SET_HASH_NET
-          CONFIG_NETFILTER_XT_SET
-          CONFIG_NETFILTER_XT_MATCH_ADDRTYPE
-          CONFIG_NETFILTER_XT_MATCH_RECENT
-          CONFIG_NETFILTER_XT_TARGET_LOG
-          CONFIG_NF_LOG_IPV6
-          CONFIG_NF_LOG_SYSLOG
-          CONFIG_KSU
-          CONFIG_KSU_TRACEPOINT_HOOK
-          CONFIG_KSU_MULTI_MANAGER_SUPPORT
-          CONFIG_LTO_CLANG_THIN
-          CONFIG_LOCALVERSION_AUTO
-          CONFIG_MODULE_SCMVERSION
-          CONFIG_TRIM_UNUSED_KSYMS
-        )
-
-        for cfg in "${required_y[@]}"; do
-          grep -qx "${cfg}=y" "$CONFIG_OUT" || {
-            echo "ERROR: ${cfg}=y is missing"
-            grep -E "^${cfg}=|^# ${cfg} is not set" "$CONFIG_OUT" || true
-            exit 1
-          }
-        done
-
-        grep -qx '# CONFIG_USER_NS is not set' "$CONFIG_OUT" || {
-          echo "ERROR: baseline must keep USER_NS disabled"
-          grep -E '^CONFIG_USER_NS=|^# CONFIG_USER_NS is not set' "$CONFIG_OUT" || true
+        ACTUAL_SHA="$(sha256sum "$ACTUAL" | awk '{print $1}')"
+        NORMALIZED_SHA="$(sha256sum "$NORMALIZED" | awk '{print $1}')"
+        BASELINE_SHA="91e3593a6b8074418b4cc527b241f354f9e19245eee6328186af7f917e224b84"
+        test "$NORMALIZED_SHA" = "$BASELINE_SHA" || {
+          echo "ERROR: config changed beyond USER_NS"
+          echo "normalized=$NORMALIZED_SHA baseline=$BASELINE_SHA"
           exit 1
         }
 
-        forbidden_y=(
-          CONFIG_USER_NS
-          CONFIG_KSU_SUSFS
-          CONFIG_LTO_NONE
-          CONFIG_ZRAM_DEF_COMP_LZORLE
-        )
-
-        for cfg in "${forbidden_y[@]}"; do
-          if grep -qx "${cfg}=y" "$CONFIG_OUT"; then
-            echo "ERROR: forbidden ${cfg}=y is enabled"
-            exit 1
-          fi
-        done
-
-        grep -qx 'CONFIG_ZRAM_DEF_COMP="lzo"' "$CONFIG_OUT" || {
-          echo "ERROR: ZRAM default compressor is not lzo"
-          grep '^CONFIG_ZRAM_DEF_COMP=' "$CONFIG_OUT" || true
+        IMAGE="$OUT/Image"
+        grep -aFq '6.1.118uke-Droidspaces-ReSukiSU' "$IMAGE"
+        grep -aFq 'v4.1.0-2206a7dd@ReSukiSU' "$IMAGE"
+        grep -aFq 'clang version 17.0.2' "$IMAGE"
+        SIZE="$(stat -c '%s' "$IMAGE")"
+        test "$SIZE" -le 37079552 || {
+          echo "ERROR: Image exceeds working kernel slot: $SIZE"
           exit 1
         }
 
-        grep -qx 'CONFIG_UNUSED_KSYMS_WHITELIST="abi_symbollist.raw"' "$CONFIG_OUT" || {
-          echo "ERROR: working ABI symbol whitelist is missing"
-          grep '^CONFIG_UNUSED_KSYMS_WHITELIST=' "$CONFIG_OUT" || true
-          exit 1
-        }
-
-        grep -aFq '6.1.118uke-Droidspaces-ReSukiSU' "$IMAGE" || {
-          echo "ERROR: working uke release string was not found"
-          exit 1
-        }
-
-        grep -aFq 'v4.1.0-2206a7dd@ReSukiSU' "$IMAGE" || {
-          echo "ERROR: expected ReSukiSU revision string was not found"
-          exit 1
-        }
-
-        grep -aFq '(build-user@build-host)' "$IMAGE" || {
-          echo "ERROR: expected build user/host identity was not found"
-          exit 1
-        }
-
-        grep -aFq 'clang version 17.0.2' "$IMAGE" || {
-          echo "ERROR: expected Clang 17.0.2 toolchain string was not found"
-          exit 1
-        }
-
-        VERSION_LINE="$(strings "$IMAGE" | grep -m1 '^Linux version 6.1.118' || true)"
-        test -n "$VERSION_LINE"
-        echo "Built version: $VERSION_LINE"
-
-        # The known-working kernel occupies 37,079,552 bytes in the boot image.
-        # A larger Image cannot be inserted without moving the original AVB block.
-        IMAGE_SIZE="$(stat -c '%s' "$IMAGE")"
-        WORKING_KERNEL_SIZE=37079552
-        if [ "$IMAGE_SIZE" -gt "$WORKING_KERNEL_SIZE" ]; then
-          echo "ERROR: Image is larger than the known-working kernel slot"
-          echo "built=$IMAGE_SIZE working=$WORKING_KERNEL_SIZE"
-          exit 1
-        fi
-
-        cp "${{ github.workspace }}/wild_gki.fragment" "${{ github.workspace }}/AnyKernel3/uke-baseline.fragment"
+        cp "${{ github.workspace }}/wild_gki.fragment" "$OUT/uke-userns-twin.fragment"
         {
           echo 'release=6.1.118uke-Droidspaces-ReSukiSU'
-          echo 'resukisu=2206a7dd71e600f34378c4c583244f46e7a35670'
-          echo 'user_ns=n'
-          echo 'lto=thin'
-          echo 'trim_unused_ksyms=y'
-          echo 'unused_ksyms_whitelist=abi_symbollist.raw'
-          echo 'module_scmversion=y'
-          echo 'localversion_auto=y'
-          echo 'zram_default=lzo'
-          echo "config_sha256=$CONFIG_SHA256"
-          echo "version_line=$VERSION_LINE"
-          echo "image_size=$IMAGE_SIZE"
-          echo 'working_kernel_size=37079552'
-          echo 'sukisu_patch=547ae94bcaec53d030398f857950c64662043a5d'
-          echo 'droidspaces_patch=local-working-btf-layout'
+          echo 'user_ns=y'
+          echo 'only_config_delta=CONFIG_USER_NS'
+          echo "config_sha256=$ACTUAL_SHA"
+          echo "normalized_baseline_sha256=$NORMALIZED_SHA"
+          echo "image_size=$SIZE"
           sha256sum "$IMAGE"
-        } > "${{ github.workspace }}/AnyKernel3/uke-baseline-build.txt"
+        } > "$OUT/uke-userns-twin-build.txt"
+        echo "Verified: USER_NS is the sole config delta from the booting baseline"
 
-        echo "Verified uke baseline: exact working config, USER_NS=n, Thin LTO, KMI trim, ReSukiSU 2206a7dd, NTSYNC, LZ4K/842 and lzo ZRAM"
-
-    - name: Upload baseline diagnostics and Image
+    - name: Upload USER_NS twin diagnostics
       if: ${{ always() }}
       uses: actions/upload-artifact@v7
       with:
-        name: uke-6.1.118-baseline-diagnostics
+        name: uke-6.1.118-userns-twin-diagnostics
         path: |
           ${{ github.workspace }}/kernel-build.log
           ${{ github.workspace }}/prebuild-gki_defconfig
           ${{ github.workspace }}/wild_gki.fragment
           ${{ github.workspace }}/AnyKernel3/Image
           ${{ github.workspace }}/AnyKernel3/Image.sha256
-          ${{ github.workspace }}/AnyKernel3/uke-baseline.config
-          ${{ github.workspace }}/AnyKernel3/uke-baseline-build.txt
+          ${{ github.workspace }}/AnyKernel3/uke-userns-twin.config
+          ${{ github.workspace }}/AnyKernel3/uke-userns-normalized.config
+          ${{ github.workspace }}/AnyKernel3/uke-userns-twin-build.txt
         if-no-files-found: ignore
         compression-level: 9
