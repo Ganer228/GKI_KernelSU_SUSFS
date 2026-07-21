@@ -36,13 +36,57 @@ runs:
         chmod +x scripts/setlocalversion
         : > .scmversion
 
-        cat >> "${{ github.workspace }}/wild_gki.fragment" << 'EOF'
+        FRAGMENT="${{ github.workspace }}/wild_gki.fragment"
+        cat >> "$FRAGMENT" << 'EOF'
         CONFIG_LOCALVERSION=""
         CONFIG_LOCALVERSION_AUTO=y
         CONFIG_MODULE_SCMVERSION=y
         CONFIG_TRIM_UNUSED_KSYMS=y
         CONFIG_UNUSED_KSYMS_WHITELIST="abi_symbollist.raw"
         EOF
+
+        # Kleaf treats repeated assignments in a defconfig fragment as an
+        # invalid expected state. Detect them before starting the expensive
+        # Bazel build and print both source lines.
+        python3 - "$FRAGMENT" << 'PY'
+        from pathlib import Path
+        import re
+        import sys
+
+        path = Path(sys.argv[1])
+        assignments = {}
+        duplicates = []
+
+        for number, raw in enumerate(path.read_text().splitlines(), start=1):
+            line = raw.strip()
+            enabled = re.fullmatch(r'(CONFIG_[A-Z0-9_]+)=(.*)', line)
+            disabled = re.fullmatch(r'# (CONFIG_[A-Z0-9_]+) is not set', line)
+            if enabled:
+                symbol, value = enabled.group(1), enabled.group(2)
+            elif disabled:
+                symbol, value = disabled.group(1), 'n'
+            else:
+                continue
+
+            if symbol in assignments:
+                previous_number, previous_value = assignments[symbol]
+                duplicates.append(
+                    (symbol, previous_number, previous_value, number, value)
+                )
+            else:
+                assignments[symbol] = (number, value)
+
+        if duplicates:
+            print('ERROR: duplicate Kconfig assignments in wild_gki.fragment:')
+            for symbol, old_line, old_value, new_line, new_value in duplicates:
+                print(
+                    f'  {symbol}: line {old_line}={old_value!r}, '
+                    f'line {new_line}={new_value!r}'
+                )
+            raise SystemExit(1)
+
+        print(f'Fragment validation passed: {len(assignments)} unique symbols')
+        PY
 
         echo 'Target release: 6.1.118uke-Droidspaces-ReSukiSU'
         echo 'Target KMI profile: trim + abi_symbollist.raw + module SCM version'
