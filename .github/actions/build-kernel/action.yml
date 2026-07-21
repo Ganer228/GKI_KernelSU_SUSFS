@@ -21,6 +21,12 @@ runs:
         export CC="ccache clang"
         export CXX="ccache clang++"
 
+        # Reproduce the build identity embedded in the known-working Image.
+        export SOURCE_DATE_EPOCH=1733040600
+        export KBUILD_BUILD_TIMESTAMP="Sun Dec 01 08:10:00 UTC 2024"
+        export KBUILD_BUILD_USER="build-user"
+        export KBUILD_BUILD_HOST="build-host"
+
         if [ -f "build/build.sh" ]; then
           set +e
           (
@@ -41,6 +47,10 @@ runs:
             --config=fast \
             --lto=thin \
             --config=stamp \
+            --action_env=SOURCE_DATE_EPOCH=1733040600 \
+            --action_env=KBUILD_BUILD_TIMESTAMP="Sun Dec 01 08:10:00 UTC 2024" \
+            --action_env=KBUILD_BUILD_USER=build-user \
+            --action_env=KBUILD_BUILD_HOST=build-host \
             --defconfig_fragment=//common:arch/arm64/configs/wild_gki.fragment \
             //common:kernel_aarch64/Image \
             2>&1 | tee "$LOG_FILE"
@@ -177,6 +187,12 @@ runs:
           exit 1
         }
 
+        strings "$IMAGE" | grep -Fq '#1 SMP PREEMPT Sun Dec 01 08:10:00 UTC 2024' || {
+          echo "ERROR: working kernel timestamp was not reproduced"
+          strings "$IMAGE" | grep -m1 '^Linux version 6.1.118' || true
+          exit 1
+        }
+
         # The known-working kernel occupies 37,079,552 bytes in the boot image.
         # A larger Image cannot be inserted without moving the original AVB block.
         IMAGE_SIZE="$(stat -c '%s' "$IMAGE")"
@@ -197,6 +213,7 @@ runs:
           echo 'unused_ksyms_whitelist=abi_symbollist.raw'
           echo 'module_scmversion=y'
           echo 'localversion_auto=y'
+          echo 'build_timestamp=Sun Dec 01 08:10:00 UTC 2024'
           echo 'zram_default=lzo'
           echo "image_size=$IMAGE_SIZE"
           echo 'working_kernel_size=37079552'
@@ -205,7 +222,7 @@ runs:
           sha256sum "$IMAGE"
         } > "${{ github.workspace }}/AnyKernel3/uke-baseline-build.txt"
 
-        echo "Verified working uke baseline: USER_NS=n, Thin LTO, KMI trim, ReSukiSU 2206a7dd, NTSYNC, LZ4K/842 and lzo ZRAM"
+        echo "Verified working uke baseline: USER_NS=n, Thin LTO, KMI trim, ReSukiSU 2206a7dd, NTSYNC, LZ4K/842, lzo ZRAM and working timestamp"
 
     - name: Upload baseline diagnostics and Image
       if: ${{ always() }}
