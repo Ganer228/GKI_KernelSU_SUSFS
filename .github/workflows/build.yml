@@ -1,6 +1,7 @@
-name: Kernel Build Process
+name: Uke baseline kernel build
+
 permissions:
-  contents: write
+  contents: read
   actions: write
 
 on:
@@ -12,6 +13,7 @@ on:
       variant:
         required: false
         type: string
+        default: Normal
       ksu_commit:
         required: false
         type: string
@@ -30,239 +32,116 @@ on:
       use_repo:
         required: false
         type: boolean
+        default: false
 
 jobs:
   build-gki:
     name: "${{ inputs.kernel_version }} (${{ inputs.variant }})"
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v5
+      - name: Checkout Repository
+        uses: actions/checkout@v5
 
-    - name: Parse kernel version
-      id: parse
-      uses: ./.github/actions/parse-kernel-version
-      with:
-        kernel_version: ${{ inputs.kernel_version }}
+      - name: Parse kernel version
+        id: parse
+        uses: ./.github/actions/parse-kernel-version
+        with:
+          kernel_version: ${{ inputs.kernel_version }}
 
-    - name: Free Disk Space
-      if: true
-      uses: endersonmenezes/free-disk-space@v3  # Use @main for latest, @v3 for stable
-      with:
-        remove_android: true
-        remove_dotnet: true
-        remove_haskell: true
-        remove_tool_cache: true
-        remove_packages: "azure-cli google-cloud-cli microsoft-edge-stable google-chrome-stable firefox postgresql* temurin-* *llvm* mysql* dotnet-sdk-*"
-        remove_packages_one_command: true
-        remove_folders: "/usr/share/swift /usr/share/miniconda /usr/share/az* /usr/local/lib/node_modules /usr/local/share/chromium /usr/local/share/powershell /usr/local/julia /usr/local/aws-cli /usr/local/aws-sam-cli /usr/share/gradle"
-        rm_cmd: "rmz"  # Use 'rmz' for faster deletion (default: 'rm')
-        rmz_version: "3.1.1"  # Required when rm_cmd is 'rmz'
-        testing: false
+      - name: Free disk space
+        uses: endersonmenezes/free-disk-space@v3
+        with:
+          remove_android: true
+          remove_dotnet: true
+          remove_haskell: true
+          remove_tool_cache: true
+          remove_swap: true
+          remove_packages: "azure-cli google-cloud-cli microsoft-edge-stable google-chrome-stable firefox postgresql* temurin-* *llvm* mysql* dotnet-sdk-*"
+          remove_packages_one_command: true
+          remove_folders: "/usr/share/swift /usr/share/miniconda /usr/share/az* /usr/local/lib/node_modules /usr/local/share/chromium /usr/local/share/powershell /usr/local/julia /usr/local/aws-cli /usr/local/aws-sam-cli /usr/share/gradle"
+          rm_cmd: rmz
+          rmz_version: "3.1.1"
+          testing: false
 
-    - name: Setup more Swap (for LTO)
-      uses: thejerrybao/setup-swap-space@v1   # or pierotofy/set-swap-space
-      with:
-        swap-size-gb: 25          # 10-24 GB is common for heavy LTO
-        # swap-space-path: /mnt/swapfile   # optional
+      - name: Setup swap for Thin LTO
+        uses: thejerrybao/setup-swap-space@v1
+        with:
+          swap-size-gb: 25
 
-    - name: Setup Build Environment
-      uses: ./.github/actions/setup-build-environment
-      env:
-        BOOT_SIGN_KEY: ${{ secrets.BOOT_SIGN_KEY }}
-      with:
-        patches_commit: ${{ inputs.patches_commit }}
-        anykernel_commit: ${{ inputs.anykernel_commit }}
-          
-    - name: Download Kernel Repository
-      uses: ./.github/actions/download-kernel
-      with:
-        android_version: ${{ steps.parse.outputs.android_version }}
-        kernel_version: ${{ steps.parse.outputs.kernel_version }}
-        os_patch_level: ${{ steps.parse.outputs.os_patch_level }}
-        use_repo: ${{ inputs.use_repo }}
+      - name: Setup pinned build environment
+        uses: ./.github/actions/setup-build-environment
+        with:
+          patches_commit: ${{ inputs.patches_commit }}
+          anykernel_commit: ${{ inputs.anykernel_commit }}
 
-    - name: Grep for vm_flags_clear after download
-      run: |
-        grep -n 'vm_flags_clear' ${{ github.workspace }}/kernel/common/mm/mmap.c || echo 'Not found'
+      - name: Download exact ACK source
+        uses: ./.github/actions/download-kernel
+        with:
+          android_version: ${{ steps.parse.outputs.android_version }}
+          kernel_version: ${{ steps.parse.outputs.kernel_version }}
+          os_patch_level: ${{ steps.parse.outputs.os_patch_level }}
+          use_repo: ${{ inputs.use_repo }}
 
-    - name: Extract Sublevel and Set File Name
-      id: extract
-      uses: ./.github/actions/extract-sublevel-file-name
-      with:
-        variant: ${{ inputs.variant }}
+      - name: Extract sublevel and file name
+        id: extract
+        uses: ./.github/actions/extract-sublevel-file-name
+        with:
+          variant: ${{ inputs.variant }}
 
-    - name: Kernel Fixes
-      uses: ./.github/actions/kernel-fixes
-      with:
-        android_version: ${{ steps.parse.outputs.android_version }}
-        kernel_version: ${{ steps.parse.outputs.kernel_version }}
-        sublevel: ${{ steps.extract.outputs.sublevel }}
-        os_patch_level: ${{ steps.parse.outputs.os_patch_level }}
+      - name: Apply generic kernel compatibility fixes
+        uses: ./.github/actions/kernel-fixes
+        with:
+          android_version: ${{ steps.parse.outputs.android_version }}
+          kernel_version: ${{ steps.parse.outputs.kernel_version }}
+          sublevel: ${{ steps.extract.outputs.sublevel }}
+          os_patch_level: ${{ steps.parse.outputs.os_patch_level }}
 
-    - name: Setup KernelSU-Next
-      if: contains(inputs.feature_set, 'KSUN') || inputs.feature_set == 'FULL'
-      uses: ./.github/actions/kernelsu
-      with:
-        ksu_commit: ${{ inputs.ksu_commit }}
+      - name: Setup pinned ReSukiSU
+        if: contains(inputs.feature_set, 'KSUN')
+        uses: ./.github/actions/kernelsu
+        with:
+          ksu_commit: ${{ inputs.ksu_commit }}
 
-    - name: SUSFS
-      if: contains(inputs.feature_set, 'SUSFS') || inputs.feature_set == 'FULL'
-      uses: ./.github/actions/susfs
-      with:
-        android_version: ${{ steps.parse.outputs.android_version }}
-        kernel_version: ${{ steps.parse.outputs.kernel_version }}
-        os_patch_level: ${{ steps.parse.outputs.os_patch_level }}
-        sublevel: ${{ steps.extract.outputs.sublevel }}
-        susfs_commit: ${{ inputs.susfs_commit }}
+      - name: Apply pinned uke DroidSpaces baseline
+        if: contains(inputs.feature_set, 'DS')
+        uses: ./.github/actions/droidspaces
+        with:
+          kernel_version: ${{ steps.parse.outputs.kernel_version }}
 
-    - name: Baseband Guard
-      if: contains(inputs.feature_set, 'BBG') || inputs.feature_set == 'FULL'
-      uses: ./.github/actions/bbg
+      - name: Apply misc working configs
+        uses: ./.github/actions/misc
+        with:
+          kernel_version: ${{ steps.parse.outputs.kernel_version }}
+          android_version: ${{ steps.parse.outputs.android_version }}
 
-    - name: Setup Networking
-      if: contains(inputs.feature_set, 'NET') || inputs.feature_set == 'FULL'
-      uses: ./.github/actions/networking
-      with:
-        kernel_version: ${{ steps.parse.outputs.kernel_version }}
-        android_version: ${{ steps.parse.outputs.android_version }}
+      - name: Apply exact working release string
+        uses: ./.github/actions/apply-kernel-branding
+        with:
+          variant: ${{ inputs.variant }}
+          kernel_version: ${{ steps.parse.outputs.kernel_version }}
+          android_version: ${{ steps.parse.outputs.android_version }}
+          sublevel: ${{ steps.extract.outputs.sublevel }}
 
-    - name: Baseband Guard
-      if: contains(inputs.feature_set, 'DS') || inputs.feature_set == 'FULL'
-      uses: ./.github/actions/droidspaces
-      with:
-        kernel_version: ${{ steps.parse.outputs.kernel_version }}
+      - name: Remove protected exports
+        uses: ./.github/actions/remove-protected-exports
 
-    - name: Setup Misc Configs
-      uses: ./.github/actions/misc
-      with:
-        kernel_version: ${{ steps.parse.outputs.kernel_version }}
-        android_version: ${{ steps.parse.outputs.android_version }}
+      - name: Clean kernel flags
+        uses: ./.github/actions/clean-kernel-flags
 
-    - name: Apply Module Check Bypass
-      if: ${{ inputs.variant == 'Bypass' }}
-      uses: ./.github/actions/module-check-bypass
-      with:
-        kernel_version: ${{ steps.parse.outputs.kernel_version }}
+      - name: Build and verify baseline Image
+        uses: ./.github/actions/build-kernel
 
-    - name: Apply Device-Specific Patches
-      uses: ./.github/actions/apply-device-patches
-      with:
-        kernel_version: ${{ steps.parse.outputs.kernel_version }}
-
-    - name: Apply ABI Compare Bypass
-      if: false
-      working-directory: ${{ github.workspace }}/kernel
-      run: |
-        # ABI compare bypass per kernel/android version
-        # Edit each block as needed per version
-        if [[ "$ANDROID_VERSION" == "android12" && "$KERNEL_VERSION" == "5.10" ]]; then
-          sed -i 's/^\s*exit 1$/    echo "Who Cares? Bypassing Now!"/' build/abi/compare_to_symbol_list
-        elif [[ "$ANDROID_VERSION" == "android13" && "$KERNEL_VERSION" == "5.10" ]]; then
-          sed -i 's/^\s*exit 1$/    echo "Who Cares? Bypassing Now!"/' build/kernel/abi/compare_to_symbol_list
-        elif [[ "$ANDROID_VERSION" == "android13" && "$KERNEL_VERSION" == "5.15" ]]; then
-          sed -i 's/^\s*exit 1$/    echo "Who Cares? Bypassing Now!"/' build/kernel/abi/compare_to_symbol_list
-        elif [[ "$ANDROID_VERSION" == "android14" && "$KERNEL_VERSION" == "5.15" ]]; then
-          perl -i -pe 's/^(\s*)return 1$/$1print("Who Cares? Bypassing Now!")\n$1return 0/g if /if missing_symbols:/../return 1/' build/kernel/abi/check_buildtime_symbol_protection.py
-        elif [[ "$ANDROID_VERSION" == "android14" && "$KERNEL_VERSION" == "6.1" ]]; then
-          perl -i -pe 's/^(\s*)return 1$/$1print("Who Cares? Bypassing Now!")\n$1return 0/g if /if missing_symbols:/../return 1/' build/kernel/abi/check_buildtime_symbol_protection.py
-        elif [[ "$ANDROID_VERSION" == "android15" && "$KERNEL_VERSION" == "6.6" ]]; then
-          perl -i -pe 's/^(\s*)return 1$/$1print("Who Cares? Bypassing Now!")\n$1return 0/g if /if missing_symbols:/../return 1/' build/kernel/abi/check_buildtime_symbol_protection.py
-        fi
-
-    - name: Apply Kernel Branding
-      uses: ./.github/actions/apply-kernel-branding
-      with:
-        variant: ${{ inputs.variant }}
-        kernel_version: ${{ steps.parse.outputs.kernel_version }}
-        android_version: ${{ steps.parse.outputs.android_version }}
-        sublevel: ${{ steps.extract.outputs.sublevel }}
-
-    - name: Remove Protected Exports
-      uses: ./.github/actions/remove-protected-exports
-
-    - name: Clean Kernel Flags
-      uses: ./.github/actions/clean-kernel-flags
-
-    - name: Scan and collect patch rejects
-      id: scan
-      if: ${{ always() && inputs.variant == 'Normal' }}
-      uses: ./.github/actions/scan-patch-rejects
-        
-    - name: Upload Rejects
-      if: ${{ always() && inputs.variant == 'Normal' }}
-      uses: actions/upload-artifact@v7
-      with:
-        name: ${{ steps.extract.outputs.file_name }}-Rejects
-        path: patch-rejects/
-        if-no-files-found: ignore
-        compression-level: 9
-
-    - name: Grep for vm_flags_clear before build
-      run: |
-        grep -n 'vm_flags_clear' ${{ github.workspace }}/kernel/common/mm/mmap.c || echo 'Not found'
-
-
-    - name: Restore build caches (ccache, Bazel)
-      uses: actions/cache@v4
-      with:
-        path: |
-          kernel/.ccache
-          kernel/bazel-*
-          kernel/.cache/bazel
-        key: buildcache-${{ inputs.kernel_version }}
-        restore-keys: |
-          buildcache-
-
-    - name: Build Kernel
-      env:
-        SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
-        KBUILD_BUILD_TIMESTAMP: ${{ env.KBUILD_BUILD_TIMESTAMP }}
-      uses: ./.github/actions/build-kernel
-
-    - name: List cache contents
-      working-directory: ${{ github.workspace }}/kernel
-      run: |
-        echo "=== .ccache ==="
-        du -sh .ccache || true
-        ls -l .ccache || true
-        echo "=== .cache/bazel ==="
-        du -sh .cache/bazel || true
-        ls -l .cache/bazel || true
-
-    - name: Create Bootimgs Folder and Build Boot Images
-      uses: ./.github/actions/build-boot-images
-
-    - name: Upload Boot Image (boot.img)
-      uses: actions/upload-artifact@v7
-      with:
-        path: ${{ github.workspace }}/boot-artifacts/${{ steps.extract.outputs.file_name }}-boot.img
-        if-no-files-found: error
-        archive: false
-
-    - name: Upload Boot Image (boot-gz.img)
-      uses: actions/upload-artifact@v7
-      with:
-        path: ${{ github.workspace }}/boot-artifacts/${{ steps.extract.outputs.file_name }}-boot-gz.img
-        if-no-files-found: error
-        archive: false
-
-    - name: Upload Boot Image (boot-lz4.img)
-      uses: actions/upload-artifact@v7
-      with:
-        path: ${{ github.workspace }}/boot-artifacts/${{ steps.extract.outputs.file_name }}-boot-lz4.img
-        if-no-files-found: error
-        archive: false
-
-    - name: Prepare AnyKernel3 Zip
-      uses: ./.github/actions/prepare-anykernel3
-
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v7
-      with:
-        name: ${{ steps.extract.outputs.file_name }}-AnyKernel3
-        path: ${{ github.workspace }}/AnyKernel3/**
-        if-no-files-found: ignore
-        compression-level: 9
+      - name: Upload verified baseline Image
+        uses: actions/upload-artifact@v7
+        with:
+          name: 6.1.118-android14-2025-01-uke-baseline
+          path: |
+            ${{ github.workspace }}/AnyKernel3/Image
+            ${{ github.workspace }}/AnyKernel3/Image.sha256
+            ${{ github.workspace }}/AnyKernel3/uke-baseline.config
+            ${{ github.workspace }}/AnyKernel3/uke-baseline.fragment
+            ${{ github.workspace }}/AnyKernel3/uke-baseline-build.txt
+          if-no-files-found: error
+          compression-level: 9
