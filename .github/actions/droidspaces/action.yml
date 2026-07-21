@@ -105,18 +105,89 @@ runs:
         rm -rf lib/lz4k_oplus
         cp -a "$PATCH_DIR/other/zram/lz4k_oplus" lib/lz4k_oplus
 
-        for item in lz4kd.patch lz4k_oplus.patch; do
-          PATCH="$PATCH_DIR/other/zram/zram_patch/6.1/$item"
-          LOG="$DIAG/$item.log"
-          test -f "$PATCH"
-          if ! patch -p1 --dry-run --forward < "$PATCH" > "$LOG" 2>&1; then
-            cat "$LOG"
-            find . -name '*.rej' -o -name '*.orig' | sort > "$DIAG/reject-files.txt" || true
-            exit 1
-          fi
-          patch -p1 --forward < "$PATCH" >> "$LOG" 2>&1
-          cat "$LOG"
-        done
+        # The pinned LZ4KD patch predates CONFIG_CRYPTO_CRC64_ROCKSOFT in
+        # android14-6.1-2025-01. Its crypto/Makefile hunk therefore has stale
+        # surrounding context even though the two insertion anchors are intact.
+        # Apply every other upstream hunk verbatim and perform only those two
+        # Makefile insertions with strict, count-checked anchors.
+        LZ4KD_ORIG="$PATCH_DIR/other/zram/zram_patch/6.1/lz4kd.patch"
+        LZ4KD_FILTERED="$DIAG/lz4kd.filtered.patch"
+        LZ4KD_LOG="$DIAG/lz4kd.patch.log"
+
+        python3 - "$LZ4KD_ORIG" "$LZ4KD_FILTERED" <<'PY'
+        from pathlib import Path
+        import sys
+
+        src = Path(sys.argv[1]).read_text().splitlines(keepends=True)
+        out = []
+        skip = False
+        removed = 0
+        for line in src:
+            if line.startswith("diff -u "):
+                skip = line.rstrip() == "diff -u a/crypto/Makefile b/crypto/Makefile"
+                if skip:
+                    removed += 1
+                    continue
+            if not skip:
+                out.append(line)
+        if removed != 1:
+            raise SystemExit(f"expected to remove one crypto/Makefile diff, removed {removed}")
+        Path(sys.argv[2]).write_text("".join(out))
+        PY
+
+        if ! patch -p1 --dry-run --forward < "$LZ4KD_FILTERED" > "$LZ4KD_LOG" 2>&1; then
+          cat "$LZ4KD_LOG"
+          find . -name '*.rej' -o -name '*.orig' | sort > "$DIAG/reject-files.txt" || true
+          exit 1
+        fi
+        patch -p1 --forward < "$LZ4KD_FILTERED" >> "$LZ4KD_LOG" 2>&1
+
+        python3 - <<'PY' 2>&1 | tee -a "$LZ4KD_LOG"
+        from pathlib import Path
+
+        path = Path("crypto/Makefile")
+        text = path.read_text()
+        lz4k = "obj-$(CONFIG_CRYPTO_LZ4K) += lz4k.o"
+        lz4kd = "obj-$(CONFIG_CRYPTO_LZ4KD) += lz4kd.o"
+
+        if text.count(lz4k) == 1 and text.count(lz4kd) == 1:
+            print("crypto/Makefile LZ4K entries already present exactly once")
+        else:
+            if lz4k in text or lz4kd in text:
+                raise SystemExit("partial or duplicate LZ4K crypto/Makefile state")
+            anchor = (
+                "obj-$(CONFIG_CRYPTO_LZ4) += lz4.o\n"
+                "obj-$(CONFIG_CRYPTO_LZ4HC) += lz4hc.o\n"
+            )
+            replacement = (
+                "obj-$(CONFIG_CRYPTO_LZ4) += lz4.o\n"
+                "obj-$(CONFIG_CRYPTO_LZ4K) += lz4k.o\n"
+                "obj-$(CONFIG_CRYPTO_LZ4HC) += lz4hc.o\n"
+                "obj-$(CONFIG_CRYPTO_LZ4KD) += lz4kd.o\n"
+            )
+            if text.count(anchor) != 1:
+                raise SystemExit(f"expected one crypto/Makefile LZ4 anchor, found {text.count(anchor)}")
+            text = text.replace(anchor, replacement, 1)
+            path.write_text(text)
+            print("adapted crypto/Makefile LZ4K/LZ4KD entries exactly once")
+
+        final = path.read_text()
+        if final.count(lz4k) != 1 or final.count(lz4kd) != 1:
+            raise SystemExit("LZ4K crypto/Makefile verification failed")
+        PY
+
+        grep -n -A5 -B3 'CONFIG_CRYPTO_LZ4K' crypto/Makefile | tee "$DIAG/crypto-Makefile-lz4k.txt"
+        cat "$LZ4KD_LOG"
+
+        OPLUS_PATCH="$PATCH_DIR/other/zram/zram_patch/6.1/lz4k_oplus.patch"
+        OPLUS_LOG="$DIAG/lz4k_oplus.patch.log"
+        if ! patch -p1 --dry-run --forward < "$OPLUS_PATCH" > "$OPLUS_LOG" 2>&1; then
+          cat "$OPLUS_LOG"
+          find . -name '*.rej' -o -name '*.orig' | sort > "$DIAG/reject-files.txt" || true
+          exit 1
+        fi
+        patch -p1 --forward < "$OPLUS_PATCH" >> "$OPLUS_LOG" 2>&1
+        cat "$OPLUS_LOG"
 
     - name: Apply pinned NTSync implementation
       shell: bash
