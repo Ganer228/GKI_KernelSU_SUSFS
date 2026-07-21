@@ -10,16 +10,79 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Apply pinned SYSVIPC kABI fix
+    - name: Prepare patch diagnostics
+      shell: bash
+      run: |
+        set -euo pipefail
+        rm -rf "${{ github.workspace }}/uke-patch-diagnostics"
+        mkdir -p "${{ github.workspace }}/uke-patch-diagnostics"
+
+    - name: Reproduce working SYSVIPC kABI layout
       shell: bash
       working-directory: ${{ github.workspace }}/kernel/common
       run: |
         set -euo pipefail
         test "${{ inputs.kernel_version }}" = "6.1"
-        curl -fL \
-          "https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/0b270d3d3b80eb4e0c3267a969c5ba4a7610c533/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch" \
-          -o /tmp/uke-sysvipc-kabi.patch
-        patch -p1 --forward < /tmp/uke-sysvipc-kabi.patch
+
+        DIAG="${{ github.workspace }}/uke-patch-diagnostics"
+        cp include/linux/sched.h "$DIAG/sched.h.before"
+
+        python3 - <<'PY' 2>&1 | tee "$DIAG/sysvipc-transform.log"
+        from pathlib import Path
+        import re
+
+        path = Path("include/linux/sched.h")
+        text = path.read_text()
+
+        # The booting uke Image contains this exact BTF layout:
+        # vendor/oem arrays, KABI slots 1..8, sysvsem in slot 6 and
+        # sysvshm in slots 7+8. Keep the vendor arrays untouched.
+        fields = re.compile(
+            r'(#ifdef CONFIG_SYSVIPC\n)'
+            r'(?P<indent>[ \t]*)struct sysv_sem[ \t]+sysvsem;\n'
+            r'(?P=indent)struct sysv_shm[ \t]+sysvshm;\n'
+            r'(#endif)',
+            re.MULTILINE,
+        )
+        replacement_fields = (
+            r'\1'
+            r'\g<indent>/* sysvsem is stored in Android KABI slot 6 below */\n'
+            r'\g<indent>/* sysvshm is stored in Android KABI slots 7 and 8 below */\n'
+            r'\3'
+        )
+        text, n_fields = fields.subn(replacement_fields, text, count=1)
+        if n_fields != 1:
+            raise SystemExit(f"expected one original SYSVIPC field block, found {n_fields}")
+
+        reserves = re.compile(
+            r'(?P<indent>[ \t]*)ANDROID_KABI_RESERVE\(6\);\n'
+            r'(?P=indent)ANDROID_KABI_RESERVE\(7\);\n'
+            r'(?P=indent)ANDROID_KABI_RESERVE\(8\);',
+            re.MULTILINE,
+        )
+        replacement_reserves = (
+            r'#ifdef CONFIG_SYSVIPC\n'
+            r'\g<indent>ANDROID_KABI_USE(6, struct sysv_sem sysvsem);\n'
+            r'\g<indent>_ANDROID_KABI_REPLACE(ANDROID_KABI_RESERVE(7); '
+            r'ANDROID_KABI_RESERVE(8), struct sysv_shm sysvshm);\n'
+            r'#else\n'
+            r'\g<indent>ANDROID_KABI_RESERVE(6);\n'
+            r'\g<indent>ANDROID_KABI_RESERVE(7);\n'
+            r'\g<indent>ANDROID_KABI_RESERVE(8);\n'
+            r'#endif'
+        )
+        text, n_reserves = reserves.subn(replacement_reserves, text, count=1)
+        if n_reserves != 1:
+            raise SystemExit(f"expected one KABI 6/7/8 reserve block, found {n_reserves}")
+
+        path.write_text(text)
+        print("SYSVIPC kABI transform applied exactly once")
+        PY
+
+        cp include/linux/sched.h "$DIAG/sched.h.after"
+        grep -n -A12 -B6 'ANDROID_KABI_USE(6' include/linux/sched.h | tee "$DIAG/sysvipc-layout.txt"
+        grep -q 'ANDROID_KABI_USE(6, struct sysv_sem sysvsem)' include/linux/sched.h
+        grep -q 'struct sysv_shm sysvshm' include/linux/sched.h
 
     - name: Add pinned LZ4K LZ4KD and LZ4K OPlus sources
       shell: bash
@@ -28,10 +91,12 @@ runs:
         set -euo pipefail
         PATCH_REF="547ae94bcaec53d030398f857950c64662043a5d"
         PATCH_DIR="${{ github.workspace }}/SukiSU_patch"
+        DIAG="${{ github.workspace }}/uke-patch-diagnostics"
 
         rm -rf "$PATCH_DIR"
-        git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git "$PATCH_DIR"
-        git -C "$PATCH_DIR" checkout "$PATCH_REF"
+        git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git "$PATCH_DIR" \
+          2>&1 | tee "$DIAG/lz4k-clone.log"
+        git -C "$PATCH_DIR" checkout "$PATCH_REF" 2>&1 | tee -a "$DIAG/lz4k-clone.log"
         test "$(git -C "$PATCH_DIR" rev-parse HEAD)" = "$PATCH_REF"
 
         cp -a "$PATCH_DIR/other/zram/lz4k/include/linux/." include/linux/
@@ -40,8 +105,18 @@ runs:
         rm -rf lib/lz4k_oplus
         cp -a "$PATCH_DIR/other/zram/lz4k_oplus" lib/lz4k_oplus
 
-        patch -p1 --forward < "$PATCH_DIR/other/zram/zram_patch/6.1/lz4kd.patch"
-        patch -p1 --forward < "$PATCH_DIR/other/zram/zram_patch/6.1/lz4k_oplus.patch"
+        for item in lz4kd.patch lz4k_oplus.patch; do
+          PATCH="$PATCH_DIR/other/zram/zram_patch/6.1/$item"
+          LOG="$DIAG/$item.log"
+          test -f "$PATCH"
+          if ! patch -p1 --dry-run --forward < "$PATCH" > "$LOG" 2>&1; then
+            cat "$LOG"
+            find . -name '*.rej' -o -name '*.orig' | sort > "$DIAG/reject-files.txt" || true
+            exit 1
+          fi
+          patch -p1 --forward < "$PATCH" >> "$LOG" 2>&1
+          cat "$LOG"
+        done
 
     - name: Apply pinned NTSync implementation
       shell: bash
@@ -50,10 +125,21 @@ runs:
         set -euo pipefail
         COMPAT="${{ github.workspace }}/kernel_patches/common/ntsync/ntsync_compat_android14-6.1.patch"
         BASE="${{ github.workspace }}/kernel_patches/common/ntsync/ntsync_base.patch"
-        test -f "$COMPAT"
-        test -f "$BASE"
-        patch -p1 --forward < "$COMPAT"
-        patch -p1 --forward < "$BASE"
+        DIAG="${{ github.workspace }}/uke-patch-diagnostics"
+
+        for spec in "compat:$COMPAT" "base:$BASE"; do
+          NAME="${spec%%:*}"
+          PATCH="${spec#*:}"
+          LOG="$DIAG/ntsync-$NAME.log"
+          test -f "$PATCH"
+          if ! patch -p1 --dry-run --forward < "$PATCH" > "$LOG" 2>&1; then
+            cat "$LOG"
+            find . -name '*.rej' -o -name '*.orig' | sort > "$DIAG/reject-files.txt" || true
+            exit 1
+          fi
+          patch -p1 --forward < "$PATCH" >> "$LOG" 2>&1
+          cat "$LOG"
+        done
 
     - name: Restore known-working uke config profile
       shell: bash
