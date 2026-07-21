@@ -1,6 +1,6 @@
 name: Build and verify uke baseline kernel
 
-description: Build the kernel with Thin LTO and reject any Image that differs from the known-working uke profile
+description: Build the kernel with Thin LTO and reject any Image that differs materially from the known-working uke profile
 
 runs:
   using: composite
@@ -21,9 +21,9 @@ runs:
         export CC="ccache clang"
         export CXX="ccache clang++"
 
-        # Reproduce the build identity embedded in the known-working Image.
-        export SOURCE_DATE_EPOCH=1733040600
-        export KBUILD_BUILD_TIMESTAMP="Sun Dec 01 08:10:00 UTC 2024"
+        # Match the useful build identity fields from the known-working Image.
+        # Kleaf deliberately normalizes the timestamp for reproducible builds;
+        # the date is not part of KMI, module vermagic compatibility or boot ABI.
         export KBUILD_BUILD_USER="build-user"
         export KBUILD_BUILD_HOST="build-host"
 
@@ -47,8 +47,6 @@ runs:
             --config=fast \
             --lto=thin \
             --config=stamp \
-            --action_env=SOURCE_DATE_EPOCH=1733040600 \
-            --action_env=KBUILD_BUILD_TIMESTAMP="Sun Dec 01 08:10:00 UTC 2024" \
             --action_env=KBUILD_BUILD_USER=build-user \
             --action_env=KBUILD_BUILD_HOST=build-host \
             --defconfig_fragment=//common:arch/arm64/configs/wild_gki.fragment \
@@ -85,7 +83,7 @@ runs:
         cp "$SRC" "${{ github.workspace }}/AnyKernel3/Image"
         sha256sum "${{ github.workspace }}/AnyKernel3/Image" | tee "${{ github.workspace }}/AnyKernel3/Image.sha256"
 
-    - name: Verify embedded working config and release
+    - name: Verify exact working config and binary profile
       shell: bash
       working-directory: ${{ github.workspace }}
       run: |
@@ -95,9 +93,19 @@ runs:
         IMAGE="${{ github.workspace }}/AnyKernel3/Image"
         CONFIG_OUT="${{ github.workspace }}/AnyKernel3/uke-baseline.config"
         EXTRACT="${{ github.workspace }}/kernel/common/scripts/extract-ikconfig"
+        EXPECTED_CONFIG_SHA256="91e3593a6b8074418b4cc527b241f354f9e19245eee6328186af7f917e224b84"
 
         bash "$EXTRACT" "$IMAGE" > "$CONFIG_OUT"
         test -s "$CONFIG_OUT"
+
+        CONFIG_SHA256="$(sha256sum "$CONFIG_OUT" | awk '{print $1}')"
+        if [ "$CONFIG_SHA256" != "$EXPECTED_CONFIG_SHA256" ]; then
+          echo "ERROR: embedded config is not byte-for-byte identical to the known-working uke config"
+          echo "actual=$CONFIG_SHA256"
+          echo "expected=$EXPECTED_CONFIG_SHA256"
+          exit 1
+        fi
+        echo "Exact working config verified: $CONFIG_SHA256"
 
         required_y=(
           CONFIG_PID_NS
@@ -177,21 +185,29 @@ runs:
           exit 1
         }
 
-        strings "$IMAGE" | grep -Fq '6.1.118uke-Droidspaces-ReSukiSU' || {
+        grep -aFq '6.1.118uke-Droidspaces-ReSukiSU' "$IMAGE" || {
           echo "ERROR: working uke release string was not found"
           exit 1
         }
 
-        strings "$IMAGE" | grep -Fq 'v4.1.0-2206a7dd@ReSukiSU' || {
+        grep -aFq 'v4.1.0-2206a7dd@ReSukiSU' "$IMAGE" || {
           echo "ERROR: expected ReSukiSU revision string was not found"
           exit 1
         }
 
-        strings "$IMAGE" | grep -Fq '#1 SMP PREEMPT Sun Dec 01 08:10:00 UTC 2024' || {
-          echo "ERROR: working kernel timestamp was not reproduced"
-          strings "$IMAGE" | grep -m1 '^Linux version 6.1.118' || true
+        grep -aFq '(build-user@build-host)' "$IMAGE" || {
+          echo "ERROR: expected build user/host identity was not found"
           exit 1
         }
+
+        grep -aFq 'clang version 17.0.2' "$IMAGE" || {
+          echo "ERROR: expected Clang 17.0.2 toolchain string was not found"
+          exit 1
+        }
+
+        VERSION_LINE="$(strings "$IMAGE" | grep -m1 '^Linux version 6.1.118' || true)"
+        test -n "$VERSION_LINE"
+        echo "Built version: $VERSION_LINE"
 
         # The known-working kernel occupies 37,079,552 bytes in the boot image.
         # A larger Image cannot be inserted without moving the original AVB block.
@@ -213,8 +229,9 @@ runs:
           echo 'unused_ksyms_whitelist=abi_symbollist.raw'
           echo 'module_scmversion=y'
           echo 'localversion_auto=y'
-          echo 'build_timestamp=Sun Dec 01 08:10:00 UTC 2024'
           echo 'zram_default=lzo'
+          echo "config_sha256=$CONFIG_SHA256"
+          echo "version_line=$VERSION_LINE"
           echo "image_size=$IMAGE_SIZE"
           echo 'working_kernel_size=37079552'
           echo 'sukisu_patch=547ae94bcaec53d030398f857950c64662043a5d'
@@ -222,7 +239,7 @@ runs:
           sha256sum "$IMAGE"
         } > "${{ github.workspace }}/AnyKernel3/uke-baseline-build.txt"
 
-        echo "Verified working uke baseline: USER_NS=n, Thin LTO, KMI trim, ReSukiSU 2206a7dd, NTSYNC, LZ4K/842, lzo ZRAM and working timestamp"
+        echo "Verified uke baseline: exact working config, USER_NS=n, Thin LTO, KMI trim, ReSukiSU 2206a7dd, NTSYNC, LZ4K/842 and lzo ZRAM"
 
     - name: Upload baseline diagnostics and Image
       if: ${{ always() }}
