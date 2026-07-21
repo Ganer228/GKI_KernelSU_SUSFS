@@ -1,11 +1,10 @@
-name: Build uke working baseline
+name: Build uke USER_NS twin
 
-# Manual trigger marker: fragment conflict fixed at fdd9f524.
 on:
   workflow_dispatch:
   push:
     branches:
-      - uke-working-baseline
+      - uke-userns-twin
     paths:
       - .github/workflows/uke-baseline.yml
       - .github/workflows/prepare.yml
