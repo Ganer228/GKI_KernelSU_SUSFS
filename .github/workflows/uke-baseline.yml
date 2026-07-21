@@ -1,5 +1,6 @@
 name: Build uke working baseline
 
+# Manual trigger marker: fragment conflict fixed at fdd9f524.
 on:
   workflow_dispatch:
   push:
