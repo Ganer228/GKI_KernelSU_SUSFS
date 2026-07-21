@@ -110,6 +110,18 @@ jobs:
         with:
           kernel_version: ${{ steps.parse.outputs.kernel_version }}
 
+      - name: Upload uke patch diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: uke-patch-diagnostics
+          path: |
+            ${{ github.workspace }}/uke-patch-diagnostics
+            ${{ github.workspace }}/kernel/common/**/*.rej
+            ${{ github.workspace }}/kernel/common/**/*.orig
+          if-no-files-found: ignore
+          compression-level: 9
+
       - name: Apply misc working configs
         uses: ./.github/actions/misc
         with:
