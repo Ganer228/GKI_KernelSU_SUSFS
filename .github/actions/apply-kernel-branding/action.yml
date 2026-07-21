@@ -1,6 +1,6 @@
 name: Apply uke kernel branding
 
-description: Match the release string of the known-working Xiaomi Pad 7 kernel
+description: Match the release and SCM/KMI settings of the known-working Xiaomi Pad 7 kernel
 
 inputs:
   variant:
@@ -19,7 +19,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Apply exact uke release suffix
+    - name: Apply exact uke release and working trim profile
       shell: bash
       working-directory: ${{ github.workspace }}/kernel/common
       run: |
@@ -29,11 +29,20 @@ runs:
         test "${{ inputs.kernel_version }}" = "6.1"
         test "${{ inputs.sublevel }}" = "118"
 
+        # The known-working Image has LOCALVERSION_AUTO and MODULE_SCMVERSION
+        # enabled, while its patched setlocalversion emits this exact suffix.
         sed -i '$d' scripts/setlocalversion
         echo 'echo "uke-Droidspaces-ReSukiSU"' >> scripts/setlocalversion
         chmod +x scripts/setlocalversion
         : > .scmversion
 
-        echo 'CONFIG_LOCALVERSION=""' >> "${{ github.workspace }}/wild_gki.fragment"
-        echo '# CONFIG_LOCALVERSION_AUTO is not set' >> "${{ github.workspace }}/wild_gki.fragment"
+        cat >> "${{ github.workspace }}/wild_gki.fragment" << 'EOF'
+        CONFIG_LOCALVERSION=""
+        CONFIG_LOCALVERSION_AUTO=y
+        CONFIG_MODULE_SCMVERSION=y
+        CONFIG_TRIM_UNUSED_KSYMS=y
+        CONFIG_UNUSED_KSYMS_WHITELIST="abi_symbollist.raw"
+        EOF
+
         echo 'Target release: 6.1.118uke-Droidspaces-ReSukiSU'
+        echo 'Target KMI profile: trim + abi_symbollist.raw + module SCM version'
