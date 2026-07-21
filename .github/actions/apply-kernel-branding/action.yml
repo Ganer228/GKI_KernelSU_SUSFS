@@ -1,6 +1,6 @@
-name: Apply uke kernel branding
+name: Apply uke USER_NS twin identity
 
-description: Match the release and SCM/KMI settings of the known-working Xiaomi Pad 7 kernel
+description: Match the booting baseline and switch only CONFIG_USER_NS from n to y
 
 inputs:
   variant:
@@ -19,7 +19,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Apply exact uke release and working trim profile
+    - name: Apply exact release KMI profile and USER_NS delta
       shell: bash
       working-directory: ${{ github.workspace }}/kernel/common
       run: |
@@ -29,14 +29,23 @@ runs:
         test "${{ inputs.kernel_version }}" = "6.1"
         test "${{ inputs.sublevel }}" = "118"
 
-        # The known-working Image has LOCALVERSION_AUTO and MODULE_SCMVERSION
-        # enabled, while its patched setlocalversion emits this exact suffix.
         sed -i '$d' scripts/setlocalversion
         echo 'echo "uke-Droidspaces-ReSukiSU"' >> scripts/setlocalversion
         chmod +x scripts/setlocalversion
         : > .scmversion
 
         FRAGMENT="${{ github.workspace }}/wild_gki.fragment"
+
+        # The successful baseline contains exactly one disabled USER_NS line.
+        # Replace it in place so no other fragment assignment changes position.
+        BEFORE="$(grep -c '^# CONFIG_USER_NS is not set$' "$FRAGMENT" || true)"
+        ENABLED_BEFORE="$(grep -c '^CONFIG_USER_NS=y$' "$FRAGMENT" || true)"
+        test "$BEFORE" = "1"
+        test "$ENABLED_BEFORE" = "0"
+        sed -i 's/^# CONFIG_USER_NS is not set$/CONFIG_USER_NS=y/' "$FRAGMENT"
+        test "$(grep -c '^CONFIG_USER_NS=y$' "$FRAGMENT")" = "1"
+        test "$(grep -c '^# CONFIG_USER_NS is not set$' "$FRAGMENT" || true)" = "0"
+
         cat >> "$FRAGMENT" << 'EOF'
         CONFIG_LOCALVERSION=""
         CONFIG_LOCALVERSION_AUTO=y
@@ -45,9 +54,6 @@ runs:
         CONFIG_UNUSED_KSYMS_WHITELIST="abi_symbollist.raw"
         EOF
 
-        # Kleaf treats repeated assignments in a defconfig fragment as an
-        # invalid expected state. Detect them before starting the expensive
-        # Bazel build and print both source lines.
         python3 - "$FRAGMENT" << 'PY'
         from pathlib import Path
         import re
@@ -56,7 +62,6 @@ runs:
         path = Path(sys.argv[1])
         assignments = {}
         duplicates = []
-
         for number, raw in enumerate(path.read_text().splitlines(), start=1):
             line = raw.strip()
             enabled = re.fullmatch(r'(CONFIG_[A-Z0-9_]+)=(.*)', line)
@@ -67,26 +72,22 @@ runs:
                 symbol, value = disabled.group(1), 'n'
             else:
                 continue
-
             if symbol in assignments:
-                previous_number, previous_value = assignments[symbol]
-                duplicates.append(
-                    (symbol, previous_number, previous_value, number, value)
-                )
+                old_line, old_value = assignments[symbol]
+                duplicates.append((symbol, old_line, old_value, number, value))
             else:
                 assignments[symbol] = (number, value)
 
         if duplicates:
-            print('ERROR: duplicate Kconfig assignments in wild_gki.fragment:')
+            print('ERROR: duplicate Kconfig assignments:')
             for symbol, old_line, old_value, new_line, new_value in duplicates:
-                print(
-                    f'  {symbol}: line {old_line}={old_value!r}, '
-                    f'line {new_line}={new_value!r}'
-                )
+                print(f'  {symbol}: line {old_line}={old_value!r}, line {new_line}={new_value!r}')
             raise SystemExit(1)
 
-        print(f'Fragment validation passed: {len(assignments)} unique symbols')
+        if assignments.get('CONFIG_USER_NS', (None, None))[1] != 'y':
+            raise SystemExit('CONFIG_USER_NS=y is not the unique USER_NS assignment')
+        print(f'USER_NS twin fragment verified: {len(assignments)} unique symbols')
         PY
 
         echo 'Target release: 6.1.118uke-Droidspaces-ReSukiSU'
-        echo 'Target KMI profile: trim + abi_symbollist.raw + module SCM version'
+        echo 'Twin delta: CONFIG_USER_NS=n -> y only'
